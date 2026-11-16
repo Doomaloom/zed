@@ -71,7 +71,9 @@ pub struct Walkthrough {
 
 impl Walkthrough {
     pub fn step_index(&self, step: &StepId) -> Option<usize> {
-        self.steps.iter().position(|candidate| &candidate.id == step)
+        self.steps
+            .iter()
+            .position(|candidate| &candidate.id == step)
     }
 
     pub fn file_count(&self) -> usize {
@@ -312,17 +314,20 @@ impl Walkthrough {
             .steps
             .iter()
             .map(|step| {
-                let project_path = project.read(cx).find_project_path(&step.path, cx).filter(
-                    |project_path| {
-                        project
-                            .read(cx)
-                            .entry_for_path(project_path, cx)
-                            .is_some_and(|entry| entry.is_file())
-                    },
-                );
+                let project_path =
+                    project
+                        .read(cx)
+                        .find_project_path(&step.path, cx)
+                        .filter(|project_path| {
+                            project
+                                .read(cx)
+                                .entry_for_path(project_path, cx)
+                                .is_some_and(|entry| entry.is_file())
+                        });
                 project_path.map(|project_path| {
-                    let open_buffer =
-                        project.update(cx, |project, cx| project.open_buffer(project_path.clone(), cx));
+                    let open_buffer = project.update(cx, |project, cx| {
+                        project.open_buffer(project_path.clone(), cx)
+                    });
                     (project_path, open_buffer)
                 })
             })
@@ -379,18 +384,25 @@ impl Walkthrough {
                             async move { check_flowchart(&source) }
                         })
                         .await;
-                    if let Err(message) = check {
-                        errors.push(StepError {
-                            step: None,
-                            kind: StepErrorKind::InvalidFlowchart { message },
-                        });
+                    match check {
+                        Ok(()) => Some(Ok(Flowchart::new(source))),
+                        Err(message) => {
+                            errors.push(StepError {
+                                step: None,
+                                kind: StepErrorKind::InvalidFlowchart { message },
+                            });
+                            Some(Err(()))
+                        }
                     }
-                    Some(Flowchart::new(source))
                 }
                 None => None,
             };
+            // Node ids cannot be trusted when the flowchart does not parse,
+            // and reporting every node as unknown would bury the real error.
+            let flowchart_is_valid = !matches!(flowchart, Some(Err(())));
+            let flowchart = flowchart.and_then(|flowchart| flowchart.ok());
 
-            for step_json in &json.steps {
+            for step_json in json.steps.iter().filter(|_| flowchart_is_valid) {
                 let Some(node) = &step_json.node else {
                     continue;
                 };
@@ -1080,10 +1092,7 @@ mod tests {
         ]);
         json.flowchart = Some("flowchart TD\n  parse --> verify".to_string());
 
-        let errors = cx
-            .update(|cx| {
-                Walkthrough::from_json(json, &project, |_| Err("bad syntax".to_string()), cx)
-            })
+        let errors = load(json.clone(), &project, cx)
             .await
             .err()
             .expect("walkthrough should be invalid");
@@ -1139,18 +1148,30 @@ mod tests {
                     }
                 ),
                 (
-                    None,
-                    StepErrorKind::InvalidFlowchart {
-                        message: "bad syntax".to_string()
-                    }
-                ),
-                (
                     Some("node".to_string()),
                     StepErrorKind::UnknownNode {
                         node: "nowhere".to_string()
                     }
                 ),
             ]
+        );
+
+        json.steps.retain(|step| step.node.is_some());
+        let errors = cx
+            .update(|cx| {
+                Walkthrough::from_json(json, &project, |_| Err("bad syntax".to_string()), cx)
+            })
+            .await
+            .err()
+            .expect("flowchart should be rejected");
+        assert_eq!(
+            error_kinds(errors),
+            vec![(
+                None,
+                StepErrorKind::InvalidFlowchart {
+                    message: "bad syntax".to_string()
+                }
+            )]
         );
         assert_eq!(
             rendered[1],
@@ -1261,7 +1282,10 @@ mod tests {
                 "A", "B", "C", "D", "E", "F", "G", "H", "I", "J_1", "endpoint", "K", "L"
             ]
         );
-        assert_eq!(ids("sequenceDiagram\n  Alice->>Bob: Hi"), Vec::<String>::new());
+        assert_eq!(
+            ids("sequenceDiagram\n  Alice->>Bob: Hi"),
+            Vec::<String>::new()
+        );
         assert_eq!(ids(""), Vec::<String>::new());
     }
 

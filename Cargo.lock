@@ -22703,6 +22703,7 @@ dependencies = [
  "uuid",
  "vim",
  "vim_mode_setting",
+ "walkthrough_ui",
  "watch",
  "web_search",
  "web_search_providers",

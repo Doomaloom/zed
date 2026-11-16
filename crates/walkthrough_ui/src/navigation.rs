@@ -10,9 +10,7 @@ use walkthrough::{
     Dismiss, GlobalFlowchartCheck, GoToStep, LoadFromJson, NextStep, PreviousStep, StepId,
     ToggleFlowchart, Walkthrough, WalkthroughEvent, WalkthroughJson, WalkthroughStore,
 };
-use workspace::{
-    Pane, SplitDirection, Workspace, notifications::DetachAndPromptErr as _,
-};
+use workspace::{Pane, SplitDirection, Workspace, notifications::DetachAndPromptErr as _};
 
 use crate::FlowchartView;
 
@@ -292,4 +290,138 @@ pub(crate) async fn load_walkthrough_json(
             .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::*;
+    use gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use language::Point;
+    use workspace::item::ItemHandle as _;
+
+    fn walkthrough_actions_hidden(cx: &mut VisualTestContext) -> bool {
+        cx.update(|_, cx| {
+            let filter = CommandPaletteFilter::try_global(cx).expect("filter should be set");
+            let hidden = [
+                filter.is_hidden(&NextStep),
+                filter.is_hidden(&PreviousStep),
+                filter.is_hidden(&Dismiss),
+                filter.is_hidden(&ToggleFlowchart),
+                filter.is_hidden(&GoToStep {
+                    id: "a".to_string(),
+                }),
+            ];
+            assert!(
+                hidden.iter().all(|is_hidden| *is_hidden == hidden[0]),
+                "walkthrough actions should be shown or hidden together"
+            );
+            hidden[0]
+        })
+    }
+
+    #[gpui::test]
+    async fn test_navigation_across_files(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        let three = open_editor("three.rs", &test, cx).await;
+
+        // Without a walkthrough the actions are neither listed nor handled.
+        assert!(walkthrough_actions_hidden(cx));
+        assert!(!cx.update(|window, cx| window.is_action_available(&NextStep, cx)));
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_editor(&test, cx), three);
+
+        load_walkthrough(sample_walkthrough(true), &test, cx).await;
+        assert!(!walkthrough_actions_hidden(cx));
+        assert!(cx.update(|window, cx| window.is_action_available(&NextStep, cx)));
+        let code_pane = test
+            .workspace
+            .read_with(cx, |workspace, _| workspace.active_pane().clone());
+
+        let pane_of = |editor: &Entity<Editor>, cx: &mut VisualTestContext| {
+            test.workspace
+                .read_with(cx, |workspace, _| workspace.pane_for(editor))
+                .expect("editor should be in a pane")
+        };
+        let file_of = |editor: &Entity<Editor>, cx: &mut VisualTestContext| {
+            editor.read_with(cx, |_, cx| editor.project_path(cx))
+        };
+
+        // Creating a walkthrough shows its first step.
+        let one = active_editor(&test, cx);
+        assert_eq!(file_of(&one, cx), Some(project_path("one.rs", &test, cx)));
+        assert_eq!(pane_of(&one, cx), code_pane);
+        assert_eq!(cursor(&one, cx), Point::new(1, 0));
+        assert!(one.update_in(cx, |editor, window, cx| {
+            editor.focus_handle(cx).is_focused(window)
+        }));
+
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        let two = active_editor(&test, cx);
+        assert_eq!(file_of(&two, cx), Some(project_path("two.rs", &test, cx)));
+        assert_eq!(pane_of(&two, cx), code_pane);
+        assert_eq!(cursor(&two, cx), Point::new(4, 0));
+        assert!(two.update_in(cx, |editor, window, cx| {
+            editor.focus_handle(cx).is_focused(window)
+        }));
+
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("c"));
+        assert_eq!(active_editor(&test, cx), one, "the existing tab is reused");
+        assert_eq!(cursor(&one, cx), Point::new(9, 0));
+
+        // The last and first steps are the ends.
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("c"));
+        cx.dispatch_action(PreviousStep);
+        cx.dispatch_action(PreviousStep);
+        cx.dispatch_action(PreviousStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("a"));
+        assert_eq!(active_editor(&test, cx), one);
+        assert_eq!(cursor(&one, cx), Point::new(1, 0));
+
+        // Going to the step that is already active brings it back into view.
+        test.workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&three, true, true, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(active_editor(&test, cx), three);
+        cx.dispatch_action(GoToStep {
+            id: "a".to_string(),
+        });
+        cx.run_until_parked();
+        assert_eq!(active_editor(&test, cx), one);
+
+        cx.dispatch_action(GoToStep {
+            id: "b".to_string(),
+        });
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        assert_eq!(active_editor(&test, cx), two);
+
+        // Code is never opened in the flowchart's pane.
+        let flowchart_pane = test.workspace.read_with(cx, |workspace, cx| {
+            let view = workspace
+                .item_of_type::<FlowchartView>(cx)
+                .expect("flowchart should be open");
+            workspace.pane_for(&view).expect("flowchart pane")
+        });
+        assert_ne!(flowchart_pane, code_pane);
+        assert_eq!(flowchart_pane.read_with(cx, |pane, _| pane.items_len()), 1);
+
+        cx.dispatch_action(Dismiss);
+        cx.run_until_parked();
+        assert!(
+            test.store
+                .read_with(cx, |store, _| store.active().is_none())
+        );
+        assert!(walkthrough_actions_hidden(cx));
+        assert!(!cx.update(|window, cx| window.is_action_available(&NextStep, cx)));
+    }
 }

@@ -63,15 +63,13 @@ pub fn init(cx: &mut App) {
             if store.read(cx).active().is_none() || !cx.has_flag::<WalkthroughFeatureFlag>() {
                 return div;
             }
-            div.on_action(
-                cx.listener(|workspace, _: &ToggleFlowchart, window, cx| {
-                    if workspace.item_of_type::<FlowchartView>(cx).is_some() {
-                        FlowchartView::close(workspace, window, cx);
-                    } else {
-                        FlowchartView::open(workspace, window, cx);
-                    }
-                }),
-            )
+            div.on_action(cx.listener(|workspace, _: &ToggleFlowchart, window, cx| {
+                if workspace.item_of_type::<FlowchartView>(cx).is_some() {
+                    FlowchartView::close(workspace, window, cx);
+                } else {
+                    FlowchartView::open(workspace, window, cx);
+                }
+            }))
         });
     })
     .detach();
@@ -515,8 +513,7 @@ impl FlowchartView {
             .read(cx)
             .active()
             .map(|walkthrough| walkthrough.summary.clone());
-        self.summary =
-            summary.map(|summary| cx.new(|cx| Markdown::new(summary, None, None, cx)));
+        self.summary = summary.map(|summary| cx.new(|cx| Markdown::new(summary, None, None, cx)));
     }
 
     /// Makes sure the diagram for the active step is rendered or rendering.
@@ -609,6 +606,7 @@ impl FlowchartView {
                 .child(
                     div()
                         .id("walkthrough-flowchart-source")
+                        .debug_selector(|| "walkthrough-flowchart-source".to_string())
                         .p_2()
                         .rounded_sm()
                         .border_1()
@@ -641,7 +639,7 @@ impl FlowchartView {
                             |_, _, _, _| {},
                         )
                         .absolute()
-                        .size_full(),
+                        .inset_0(),
                     )
                     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                         let hovered_step = this.step_at(event.position, cx);
@@ -802,5 +800,287 @@ impl Render for FlowchartView {
                     .children(self.render_step_list(cx)),
                 None => this.child(Label::new("No active walkthrough").color(Color::Muted)),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::*;
+    use editor::Editor;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use walkthrough::{Dismiss, NextStep, Walkthrough};
+
+    fn flowchart_view(
+        test: &TestWorkspace,
+        cx: &mut VisualTestContext,
+    ) -> Option<Entity<FlowchartView>> {
+        test.workspace.read_with(cx, |workspace, cx| {
+            workspace.item_of_type::<FlowchartView>(cx)
+        })
+    }
+
+    fn current_source(view: &Entity<FlowchartView>, cx: &mut VisualTestContext) -> Option<String> {
+        view.read_with(cx, |view, _| {
+            view.current_source
+                .as_ref()
+                .map(|source| source.to_string())
+        })
+    }
+
+    fn layout(view: &Entity<FlowchartView>, cx: &mut VisualTestContext) -> DiagramLayout {
+        view.read_with(cx, |view, _| match view.current_diagram() {
+            Some(DiagramState::Ready(diagram)) => diagram.layout.clone(),
+            Some(DiagramState::Rendering) => panic!("diagram is still rendering"),
+            Some(DiagramState::Failed(error)) => panic!("diagram failed to render: {error}"),
+            None => panic!("there is no diagram"),
+        })
+    }
+
+    #[gpui::test]
+    async fn test_view_opens_only_for_walkthroughs_with_a_flowchart(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        assert_eq!(flowchart_view(&test, cx), None);
+
+        // Without a flowchart the view can still be opened as a step list.
+        cx.dispatch_action(ToggleFlowchart);
+        cx.run_until_parked();
+        let view = flowchart_view(&test, cx).expect("toggle should open the view");
+        assert_eq!(current_source(&view, cx), None);
+        assert!(cx.debug_bounds("walkthrough-step-row-0").is_some());
+        cx.dispatch_action(ToggleFlowchart);
+        cx.run_until_parked();
+        assert_eq!(flowchart_view(&test, cx), None);
+
+        load_walkthrough(sample_walkthrough(true), &test, cx).await;
+        let view = flowchart_view(&test, cx).expect("flowchart should open on creation");
+        test.workspace.read_with(cx, |workspace, cx| {
+            let flowchart_pane = workspace.pane_for(&view).expect("flowchart pane");
+            assert_ne!(&flowchart_pane, workspace.active_pane());
+            assert!(
+                workspace.active_item_as::<Editor>(cx).is_some(),
+                "focus stays in the code"
+            );
+        });
+
+        cx.dispatch_action(Dismiss);
+        cx.run_until_parked();
+        assert_eq!(flowchart_view(&test, cx), None);
+    }
+
+    #[gpui::test]
+    async fn test_active_node_is_styled(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(true), &test, cx).await;
+        let view = flowchart_view(&test, cx).expect("flowchart should be open");
+        let base = sample_walkthrough(true).flowchart.expect("flowchart");
+
+        let source = current_source(&view, cx).expect("source");
+        assert!(source.starts_with(&base));
+        assert!(source.contains("\n  style parse fill:#"), "{source}");
+        assert_eq!(
+            layout(&view, cx)
+                .nodes
+                .iter()
+                .map(|node| node.id.to_string())
+                .collect::<Vec<_>>(),
+            ["parse", "verify"]
+        );
+
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        let source = current_source(&view, cx).expect("source");
+        assert!(source.contains("\n  style verify fill:#"), "{source}");
+        assert!(!source.contains("style parse"), "{source}");
+        layout(&view, cx);
+
+        // A step without a node leaves the diagram unstyled.
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(current_source(&view, cx), Some(base));
+
+        // Revisited steps reuse their rendered diagram.
+        assert_eq!(view.read_with(cx, |view, _| view.diagrams.len()), 3);
+        cx.dispatch_action(GoToStep {
+            id: "a".to_string(),
+        });
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.diagrams.len()), 3);
+    }
+
+    #[gpui::test]
+    async fn test_clicking_step_rows_and_nodes(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(true), &test, cx).await;
+        let view = flowchart_view(&test, cx).expect("flowchart should be open");
+        assert_eq!(active_step(&test, cx).as_deref(), Some("a"));
+
+        let row = cx
+            .debug_bounds("walkthrough-step-row-2")
+            .expect("step rows should be drawn");
+        cx.simulate_click(row.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("c"));
+
+        // Clicking a node jumps to the step linked to it.
+        let diagram_layout = layout(&view, cx);
+        let painted_bounds = view
+            .read_with(cx, |view, _| view.painted_bounds)
+            .expect("diagram should be painted");
+        let position_in_view = |diagram_position: Point<f32>| {
+            painted_bounds.origin
+                + point(
+                    painted_bounds.size.width * (diagram_position.x / diagram_layout.size.width),
+                    painted_bounds.size.height * (diagram_position.y / diagram_layout.size.height),
+                )
+        };
+        let verify = diagram_layout
+            .nodes
+            .iter()
+            .find(|node| node.id.as_ref() == "verify")
+            .expect("verify node");
+        cx.simulate_click(position_in_view(verify.bounds.center()), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+
+        // Empty space between the two nodes is not clickable.
+        let parse = diagram_layout
+            .nodes
+            .iter()
+            .find(|node| node.id.as_ref() == "parse")
+            .expect("parse node");
+        let gap = point(
+            parse.bounds.center().x,
+            (parse.bounds.bottom() + verify.bounds.top()) / 2.,
+        );
+        cx.simulate_click(position_in_view(gap), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+    }
+
+    #[gpui::test]
+    async fn test_render_failure_shows_fallback(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+
+        // Loaded without the parse check, as if the renderer rejected at view
+        // time something that validation had accepted.
+        let mut json = sample_walkthrough(true);
+        json.flowchart = Some("flowchart TD\n  parse[ --> ]]verify".to_string());
+        for step in &mut json.steps {
+            step.node = None;
+        }
+        let project = test.project.clone();
+        let walkthrough = cx
+            .update(|_, cx| Walkthrough::from_json(json, &project, |_| Ok(()), cx))
+            .await
+            .expect("walkthrough should load without the parse check");
+        test.store
+            .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
+        cx.run_until_parked();
+
+        let view = flowchart_view(&test, cx).expect("flowchart should be open");
+        view.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.current_diagram(),
+                Some(DiagramState::Failed(_))
+            ));
+        });
+        assert!(cx.debug_bounds("walkthrough-flowchart-source").is_some());
+        assert!(cx.debug_bounds("walkthrough-step-row-0").is_some());
+    }
+
+    #[gpui::test]
+    fn test_parse_check(cx: &mut TestAppContext) {
+        let svg_renderer = cx.update(|cx| cx.svg_renderer());
+        assert_eq!(
+            parse_check(
+                "flowchart TD\n  parse[Parse token] --> verify{Valid?}",
+                &svg_renderer
+            ),
+            Ok(())
+        );
+        let error = parse_check("flowchart TD\n  parse[ --> ]]verify", &svg_renderer)
+            .expect_err("invalid flowchart should be rejected");
+        assert!(error.contains("parse error"), "{error}");
+        assert!(parse_check("not a diagram", &svg_renderer).is_err());
+    }
+
+    #[gpui::test]
+    fn test_diagram_layout_from_rendered_svg(cx: &mut TestAppContext) {
+        let svg_renderer = cx.update(|cx| cx.svg_renderer());
+        let theme = cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            mermaid_theme(cx)
+        });
+        let svg = mermaid_render::render_to_svg(
+            "flowchart TD\n  parse[Parse token] --> verify{Valid?}\n  verify -- yes --> handler((Run))\n  subgraph errors\n    reject[401]\n  end\n  verify -- no --> reject",
+            &theme,
+            &svg_renderer,
+        )
+        .expect("flowchart should render");
+        let layout = diagram_layout(&svg).expect("layout should be readable");
+
+        let node = |id: &str| {
+            layout
+                .nodes
+                .iter()
+                .find(|node| node.id.as_ref() == id)
+                .unwrap_or_else(|| panic!("node {id} should have a rectangle"))
+                .bounds
+        };
+        assert_eq!(layout.nodes.len(), 4);
+        let diagram = Bounds::new(point(0., 0.), layout.size);
+        for id in ["parse", "verify", "handler", "reject"] {
+            let bounds = node(id);
+            assert!(bounds.size.width > 10. && bounds.size.height > 10., "{id}");
+            assert!(
+                diagram.contains(&bounds.origin) && diagram.contains(&bounds.bottom_right()),
+                "{id} should lie within the diagram: {bounds:?} in {diagram:?}"
+            );
+        }
+        // Top-down: parse above verify, which is above both of its targets.
+        assert!(node("parse").bottom() <= node("verify").top());
+        assert!(node("verify").bottom() <= node("handler").top());
+        assert!(node("verify").bottom() <= node("reject").top());
+        assert!(!node("handler").intersects(&node("reject")));
+    }
+
+    #[test]
+    fn test_node_at_maps_clicks_at_any_scale() {
+        let layout = DiagramLayout {
+            size: size(200., 100.),
+            nodes: vec![
+                NodeRect {
+                    id: "first".into(),
+                    bounds: Bounds::new(point(10., 10.), size(60., 30.)),
+                },
+                NodeRect {
+                    id: "second".into(),
+                    bounds: Bounds::new(point(120., 50.), size(60., 40.)),
+                },
+            ],
+        };
+        let node_id_at = |x: f32, y: f32, painted_bounds: Bounds<Pixels>| {
+            node_at(point(px(x), px(y)), painted_bounds, &layout).map(|node| node.id.to_string())
+        };
+
+        // Painted at half size, offset within the view.
+        let half = Bounds::new(point(px(50.), px(20.)), size(px(100.), px(50.)));
+        assert_eq!(node_id_at(60., 30., half).as_deref(), Some("first"));
+        assert_eq!(node_id_at(130., 60., half).as_deref(), Some("second"));
+        assert_eq!(node_id_at(100., 30., half), None);
+        assert_eq!(node_id_at(40., 30., half), None, "outside the diagram");
+
+        // Painted at double size: the same view positions land elsewhere.
+        let double = Bounds::new(point(px(50.), px(20.)), size(px(400.), px(200.)));
+        assert_eq!(node_id_at(60., 30., double), None);
+        assert_eq!(node_id_at(130., 60., double).as_deref(), Some("first"));
+        assert_eq!(node_id_at(300., 130., double).as_deref(), Some("second"));
+        assert_eq!(node_id_at(189., 99., double).as_deref(), Some("first"));
+        assert_eq!(node_id_at(191., 101., double), None);
     }
 }

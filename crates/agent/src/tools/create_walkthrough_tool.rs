@@ -268,11 +268,10 @@ mod tests {
         assert_eq!(
             error.as_ref().map_err(String::as_str),
             Err(indoc::indoc! {"
-                The walkthrough was not shown. Fix these 4 problems and call the tool again:
+                The walkthrough was not shown. Fix these 3 problems and call the tool again:
                 - Step `authenticate`: `root/src/missing.rs` is not a file in the project
                 - Step `verify`: lines 3-40 are not a valid range in a file with 5 lines (lines are 1-based and inclusive)
-                - the flowchart could not be parsed: unexpected token
-                - Step `handle`: `nowhere` is not a node id in the flowchart"}
+                - the flowchart could not be parsed: unexpected token"}
             .trim_end())
         );
 
@@ -281,11 +280,24 @@ mod tests {
 
         let mut input = valid_input();
         input["steps"][0]["anchor_text"] = json!("fn elsewhere(");
+        input["steps"][2]["node"] = json!("nowhere");
+        let error = run_tool(input, &project, cx).await;
+        assert_eq!(
+            error.as_ref().map_err(String::as_str),
+            Err(indoc::indoc! {"
+                The walkthrough was not shown. Fix these 2 problems and call the tool again:
+                - Step `authenticate`: anchor_text `fn elsewhere(` was not found within 20 lines of line 1; re-read the file and correct the line numbers
+                - Step `handle`: `nowhere` is not a node id in the flowchart"}
+            .trim_end())
+        );
+
+        let mut input = valid_input();
+        input["steps"][1]["end_line"] = json!(2);
         let error = run_tool(input, &project, cx).await;
         assert_eq!(
             error.as_ref().map_err(String::as_str),
             Err(
-                "The walkthrough was not shown. Fix this problem and call the tool again:\n- Step `authenticate`: anchor_text `fn elsewhere(` was not found within 20 lines of line 1; re-read the file and correct the line numbers"
+                "The walkthrough was not shown. Fix this problem and call the tool again:\n- Step `verify`: lines 3-2 are not a valid range in a file with 5 lines (lines are 1-based and inclusive)"
             )
         );
     }

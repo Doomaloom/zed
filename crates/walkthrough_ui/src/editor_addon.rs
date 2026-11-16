@@ -142,9 +142,8 @@ fn refresh_annotations(editor: &mut Editor, cx: &mut Context<Editor>) {
     let mut blocks = Vec::new();
     let mut properties = Vec::new();
     for (range, step, index, step_count, previous_step, next_step) in renderers {
-        let markdown = cx.new(|cx| {
-            Markdown::new(step.comment.clone(), language_registry.clone(), None, cx)
-        });
+        let markdown =
+            cx.new(|cx| Markdown::new(step.comment.clone(), language_registry.clone(), None, cx));
         let renderer = StepBlockRenderer {
             store: store.downgrade(),
             editor: weak_editor.clone(),
@@ -253,10 +252,8 @@ fn toggle_collapsed(editor: &mut Editor, step: &StepId, cx: &mut Context<Editor>
         return;
     };
     block.renderer.collapsed = !block.renderer.collapsed;
-    let renderers = HashMap::from_iter([(
-        block.block_id,
-        block.renderer.clone().into_render_block(),
-    )]);
+    let renderers =
+        HashMap::from_iter([(block.block_id, block.renderer.clone().into_render_block())]);
     editor.replace_blocks(renderers, None, cx);
 }
 
@@ -406,5 +403,198 @@ impl StepBlockRenderer {
                     .children(body),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::*;
+    use editor::display_map::{BlockId, ToDisplayPoint as _};
+    use gpui::{TestAppContext, VisualTestContext};
+    use language::Point;
+    use walkthrough::{Dismiss, NextStep};
+    use workspace::Item as _;
+
+    #[derive(Debug, PartialEq)]
+    struct Annotations {
+        blocks: usize,
+        active_rows: Vec<Range<u32>>,
+        inactive_rows: Vec<Range<u32>>,
+    }
+
+    fn annotations(editor: &Entity<Editor>, cx: &mut VisualTestContext) -> Annotations {
+        editor.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let blocks = editor
+                .addon::<WalkthroughAddon>()
+                .map(|addon| {
+                    addon
+                        .blocks
+                        .iter()
+                        .filter(|block| {
+                            snapshot
+                                .block_for_id(BlockId::Custom(block.block_id))
+                                .is_some()
+                        })
+                        .count()
+                })
+                .unwrap_or_default();
+
+            let theme = cx.theme().clone();
+            let active_color = theme.colors().text_accent.opacity(0.18);
+            let inactive_color = theme.colors().editor_document_highlight_read_background;
+            let highlights = editor.sorted_background_highlights_in_range(
+                Anchor::Min..Anchor::Max,
+                &snapshot,
+                &theme,
+            );
+            let rows_with_color = |color: Hsla| {
+                highlights
+                    .iter()
+                    .filter(|(_, highlight_color)| *highlight_color == color)
+                    .map(|(range, _)| {
+                        range.start.to_point(&snapshot).row..range.end.to_point(&snapshot).row
+                    })
+                    .collect::<Vec<_>>()
+            };
+            Annotations {
+                blocks,
+                active_rows: rows_with_color(active_color),
+                inactive_rows: rows_with_color(inactive_color),
+            }
+        })
+    }
+
+    #[gpui::test]
+    async fn test_editor_annotations(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        let one = open_editor("one.rs", &test, cx).await;
+        let unannotated = Annotations {
+            blocks: 0,
+            active_rows: vec![],
+            inactive_rows: vec![],
+        };
+        assert_eq!(annotations(&one, cx), unannotated);
+
+        load_walkthrough(sample_walkthrough(true), &test, cx).await;
+        assert_eq!(
+            annotations(&one, cx),
+            Annotations {
+                blocks: 2,
+                active_rows: vec![1..3],
+                inactive_rows: vec![9..11],
+            }
+        );
+        one.update(cx, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            let addon = editor.addon::<WalkthroughAddon>().expect("addon");
+            let block_rows = addon
+                .blocks
+                .iter()
+                .map(|block| {
+                    let block_row = snapshot
+                        .block_for_id(BlockId::Custom(block.block_id))
+                        .map(|_| block.range.end.to_display_point(&snapshot).row().0);
+                    (block.renderer.step.id.to_string(), block_row)
+                })
+                .collect::<Vec<_>>();
+            // The second block is pushed down by the height of the first.
+            assert_eq!(block_rows[0], ("a".to_string(), Some(3)));
+            assert_eq!(block_rows[1].0, "c");
+            assert!(block_rows[1].1.is_some_and(|row| row > 11));
+        });
+
+        // An editor opened after the walkthrough was created is annotated too.
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        let two = active_editor(&test, cx);
+        assert_ne!(two, one);
+        assert_eq!(
+            annotations(&two, cx),
+            Annotations {
+                blocks: 1,
+                active_rows: vec![4..5],
+                inactive_rows: vec![],
+            }
+        );
+        assert_eq!(
+            annotations(&one, cx),
+            Annotations {
+                blocks: 2,
+                active_rows: vec![],
+                inactive_rows: vec![1..3, 9..11],
+            }
+        );
+
+        let three = open_editor("three.rs", &test, cx).await;
+        assert_eq!(annotations(&three, cx), unannotated);
+
+        // Deleting a step's code leaves its comment block without a highlight.
+        one.update(cx, |editor, cx| {
+            editor.buffer().update(cx, |buffer, cx| {
+                buffer.edit([(Point::new(9, 0)..Point::new(11, 7), "")], None, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            annotations(&one, cx),
+            Annotations {
+                blocks: 2,
+                active_rows: vec![],
+                inactive_rows: vec![1..3],
+            }
+        );
+        one.update(cx, |editor, cx| {
+            let addon = editor.addon::<WalkthroughAddon>().expect("addon");
+            let stale = addon
+                .blocks
+                .iter()
+                .map(|block| block.renderer.step.is_stale(cx))
+                .collect::<Vec<_>>();
+            assert_eq!(stale, [false, true]);
+        });
+
+        // Typing above a range moves its highlight with the code.
+        one.update(cx, |editor, cx| {
+            editor.buffer().update(cx, |buffer, cx| {
+                buffer.edit([(Point::new(0, 0)..Point::new(0, 0), "new\n")], None, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(annotations(&one, cx).inactive_rows, vec![2..4]);
+
+        cx.dispatch_action(Dismiss);
+        cx.run_until_parked();
+        assert_eq!(annotations(&one, cx), unannotated);
+        assert_eq!(annotations(&two, cx), unannotated);
+        assert!(one.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+        assert!(!two.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+    }
+
+    #[gpui::test]
+    async fn test_collapsing_a_step_block(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        let one = active_editor(&test, cx);
+
+        let collapsed = |cx: &mut VisualTestContext| {
+            one.read_with(cx, |editor, _| {
+                editor
+                    .addon::<WalkthroughAddon>()
+                    .expect("addon")
+                    .blocks
+                    .iter()
+                    .map(|block| block.renderer.collapsed)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(collapsed(cx), [false, false]);
+        one.update(cx, |editor, cx| {
+            toggle_collapsed(editor, &StepId::new("c"), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(collapsed(cx), [false, true]);
+        assert_eq!(annotations(&one, cx).blocks, 2);
     }
 }
