@@ -97,4 +97,6 @@ This resolves every _(verify)_ in the technical spec against the checked-out cod
 ## Build notes
 
 - A debug build with debug info needs more than 40 GB of disk. `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` keeps it under 20 GB.
+- Building `zed` or `settings_ui` on Linux needs the ALSA development headers (`alsa.pc`). The machine this was built on lacked them, so the `zed` binary, the `settings_ui` test `test_all_tools_are_in_tool_info_or_excluded` and the default-keymap validation in `crates/zed` were not run.
+- Mermaid keywords such as `end`, `click`, `style`, `class`, `graph` and `flowchart` are not valid node ids; the tool description tells the model to avoid them.
 - Three `agent` tests (`test_fetch_tool_*redirect*`) need DNS and fail in a sandbox without it. They are unrelated to this feature.

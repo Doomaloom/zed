@@ -142,7 +142,7 @@ pub enum WalkthroughEvent {
 /// - Order steps by execution or data flow, not by file.
 /// - Use 3 to 12 steps. Each comment says why the code exists or what to notice. It never restates the code line by line.
 /// - Keep ranges tight: the function signature or the 5 to 25 lines that matter.
-/// - Include a flowchart when the code has branching or several stages. Use `flowchart TD`, at most 15 nodes, simple alphanumeric node ids, and link each step to a node where one fits.
+/// - Include a flowchart when the code has branching or several stages. Use `flowchart TD`, at most 15 nodes, simple alphanumeric node ids that are not Mermaid keywords (such as `end`, `click`, `style`, `class`, `graph` or `flowchart`), and link each step to a node where one fits.
 /// - After the walkthrough is shown, reply with one or two sentences. Do not repeat the explanation in chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WalkthroughJson {

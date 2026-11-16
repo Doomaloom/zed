@@ -71,6 +71,7 @@ All except the last are available only while a walkthrough is active. Each comme
 
 ## Known gaps
 
+- The full `zed` binary was not built or launched during development (missing ALSA headers on the build machine). Confirm `cargo run` starts before working through the checklist.
 - No visual regression test. The runner in `crates/zed` is macOS-only and this was built on Linux.
 - Multibuffer editors (project search, diagnostics, diffs) are not annotated.
 - A walkthrough lives in memory: it is gone after a restart and is not shared with collaborators.

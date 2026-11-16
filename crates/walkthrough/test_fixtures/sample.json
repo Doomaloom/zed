@@ -80,18 +80,18 @@
       "anchor_text": "fn refresh(&mut self, cx: &mut Context<Self>) {",
       "title": "The flowchart follows the active step",
       "comment": "The view appends a `style` line for the active step's node and renders that source. Rendered diagrams are cached by source, so going back to a step is instant.",
-      "node": "flowchart"
+      "node": "diagram"
     },
     {
       "id": "click",
       "path": "crates/walkthrough_ui/src/flowchart_view.rs",
       "start_line": 374,
       "end_line": 394,
-      "anchor_text": "pub(crate) fn node_at<'a>(",
+      "anchor_text": "pub(crate) fn node_at(",
       "title": "Clicks map back to nodes",
       "comment": "The diagram is painted as a bitmap, so a click is scaled from view coordinates into the SVG's coordinates and tested against the node rectangles read from the renderer's output.",
-      "node": "click"
+      "node": "nodeclick"
     }
   ],
-  "flowchart": "flowchart TD\n  tool[Agent calls create_walkthrough] --> validate{Input valid?}\n  validate -- no --> errors[Return all errors to the agent]\n  validate -- yes --> anchor[Resolve lines to anchors]\n  anchor --> store[Store emits Created]\n  store --> editor[Editors add highlights and comment blocks]\n  store --> reveal[Navigation opens the step]\n  store --> flowchart[Flowchart view renders the diagram]\n  flowchart --> click[Node click picks a step]\n  click --> reveal"
+  "flowchart": "flowchart TD\n  tool[Agent calls create_walkthrough] --> validate{Input valid?}\n  validate -- no --> errors[Return all errors to the agent]\n  validate -- yes --> anchor[Resolve lines to anchors]\n  anchor --> store[Store emits Created]\n  store --> editor[Editors add highlights and comment blocks]\n  store --> reveal[Navigation opens the step]\n  store --> diagram[Flowchart view renders the diagram]\n  diagram --> nodeclick[Node click picks a step]\n  nodeclick --> reveal"
 }

@@ -280,7 +280,13 @@ mod tests {
         });
 
         // Editor blocks: the first step's file is open, focused and annotated.
-        let steps_in = |path: &str| fixture.steps.iter().filter(|step| step.path == path).count();
+        let steps_in = |path: &str| {
+            fixture
+                .steps
+                .iter()
+                .filter(|step| step.path == path)
+                .count()
+        };
         let active_editor = |cx: &mut gpui::VisualTestContext| {
             workspace.read_with(cx, |workspace, cx| {
                 workspace
@@ -297,19 +303,25 @@ mod tests {
         let tool_path = fixture.steps[0].path.as_str();
         assert_eq!(editor_path(&tool_editor, cx).as_deref(), Some(tool_path));
         assert_eq!(
-            tool_editor.read_with(cx, |editor, _| crate::editor_addon::step_block_count(editor)),
+            tool_editor.read_with(cx, |editor, _| crate::editor_addon::step_block_count(
+                editor
+            )),
             steps_in(tool_path)
         );
 
         // Flowchart view: open beside the code, with the first node styled.
         let flowchart = workspace
-            .read_with(cx, |workspace, cx| workspace.item_of_type::<FlowchartView>(cx))
+            .read_with(cx, |workspace, cx| {
+                workspace.item_of_type::<FlowchartView>(cx)
+            })
             .expect("flowchart should be open");
         flowchart.read_with(cx, |flowchart, _| {
             let source = flowchart.current_source().expect("source");
             assert!(source.contains("\n  style tool fill:#"), "{source}");
             assert_eq!(
-                flowchart.rendered_node_ids().expect("diagram should be rendered"),
+                flowchart
+                    .rendered_node_ids()
+                    .expect("diagram should be rendered"),
                 [
                     "tool",
                     "validate",
@@ -318,8 +330,8 @@ mod tests {
                     "store",
                     "editor",
                     "reveal",
-                    "flowchart",
-                    "click"
+                    "diagram",
+                    "nodeclick"
                 ]
             );
         });
@@ -331,7 +343,9 @@ mod tests {
         let model_path = fixture.steps[1].path.as_str();
         assert_eq!(editor_path(&model_editor, cx).as_deref(), Some(model_path));
         assert_eq!(
-            model_editor.read_with(cx, |editor, _| crate::editor_addon::step_block_count(editor)),
+            model_editor.read_with(cx, |editor, _| crate::editor_addon::step_block_count(
+                editor
+            )),
             steps_in(model_path)
         );
         flowchart.read_with(cx, |flowchart, _| {

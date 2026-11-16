@@ -371,11 +371,11 @@ pub(crate) fn diagram_layout(svg: &str) -> Result<DiagramLayout> {
 /// Maps a position in the view to the node drawn there, given where the
 /// diagram is painted. The painted size may differ from the diagram's own
 /// size by any scale.
-pub(crate) fn node_at<'a>(
+pub(crate) fn node_at(
     position: Point<Pixels>,
     painted_bounds: Bounds<Pixels>,
-    layout: &'a DiagramLayout,
-) -> Option<&'a NodeRect> {
+    layout: &DiagramLayout,
+) -> Option<&NodeRect> {
     if !painted_bounds.contains(&position)
         || painted_bounds.size.width <= px(0.)
         || painted_bounds.size.height <= px(0.)
