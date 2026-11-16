@@ -320,6 +320,7 @@ dependencies = [
  "url",
  "util",
  "uuid",
+ "walkthrough",
  "watch",
  "web_search",
  "zed_env_vars",
@@ -19809,6 +19810,49 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
+]
+
+[[package]]
+name = "walkthrough"
+version = "0.1.0"
+dependencies = [
+ "collections",
+ "fs",
+ "gpui",
+ "indoc",
+ "language",
+ "project",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "settings",
+ "util",
+]
+
+[[package]]
+name = "walkthrough_ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "command_palette_hooks",
+ "editor",
+ "feature_flags",
+ "gpui",
+ "indoc",
+ "language",
+ "markdown",
+ "mermaid_render",
+ "project",
+ "quick-xml 0.41.0",
+ "serde_json",
+ "settings",
+ "theme",
+ "theme_settings",
+ "ui",
+ "util",
+ "walkthrough",
+ "workspace",
 ]
 
 [[package]]

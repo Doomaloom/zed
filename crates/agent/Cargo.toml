@@ -75,6 +75,7 @@ ui.workspace = true
 url.workspace = true
 util.workspace = true
 uuid.workspace = true
+walkthrough.workspace = true
 watch.workspace = true
 web_search.workspace = true
 zed_env_vars.workspace = true

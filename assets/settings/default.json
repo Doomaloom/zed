@@ -1321,6 +1321,7 @@
           "copy_path": true,
           "create_directory": true,
           "create_thread": true,
+          "create_walkthrough": true,
           "delete_path": true,
           "diagnostics": true,
           "edit_file": true,
@@ -1349,6 +1350,7 @@
         "tools": {
           "ask_user": false,
           "create_thread": true,
+          "create_walkthrough": true,
           "diagnostics": true,
           "fetch": true,
           "find_path": true,

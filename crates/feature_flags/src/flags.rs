@@ -119,3 +119,17 @@ impl FeatureFlag for SandboxingFeatureFlag {
     }
 }
 register_feature_flag!(SandboxingFeatureFlag);
+
+/// Gates code walkthroughs: the `create_walkthrough` agent tool and the
+/// `walkthrough::*` actions.
+pub struct WalkthroughFeatureFlag;
+
+impl FeatureFlag for WalkthroughFeatureFlag {
+    const NAME: &'static str = "walkthrough";
+    type Value = PresenceFlag;
+
+    fn enabled_for_staff() -> bool {
+        true
+    }
+}
+register_feature_flag!(WalkthroughFeatureFlag);

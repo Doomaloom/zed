@@ -1426,6 +1426,8 @@ mod tests {
             // tool calls inside the spawned thread, not the spawning itself.
             "create_thread",
             "spawn_agent",
+            // Reads files and changes only UI state, so it never prompts.
+            "create_walkthrough",
         ];
 
         let tool_info_ids: Vec<&str> = TOOLS.iter().map(|t| t.id).collect();

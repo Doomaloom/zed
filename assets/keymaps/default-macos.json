@@ -697,6 +697,8 @@
     "bindings": {
       "cmd-o": "workspace::Open",
       "alt-/": "which_key::ShowPendingBindings",
+      "ctrl-alt-]": "walkthrough::NextStep",
+      "ctrl-alt-[": "walkthrough::PreviousStep",
       // Move focus between the major regions of the window (editor, open
       // panels, status bar). Accessibility navigation; mirrors VS Code's
       // "Focus Next/Previous Part". `cmd-f6` mirrors `f6` so region navigation

@@ -620,6 +620,7 @@ fn agent_profile_tools_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sc
         "copy_path",
         "create_directory",
         "create_thread",
+        "create_walkthrough",
         "delete_path",
         "diagnostics",
         "edit_file",
