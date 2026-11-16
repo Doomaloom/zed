@@ -240,6 +240,14 @@ fn set_highlights(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn step_block_count(editor: &Editor) -> usize {
+    editor
+        .addon::<WalkthroughAddon>()
+        .map(|addon| addon.blocks.len())
+        .unwrap_or_default()
+}
+
 fn toggle_collapsed(editor: &mut Editor, step: &StepId, cx: &mut Context<Editor>) {
     let Some(addon) = editor.addon_mut::<WalkthroughAddon>() else {
         return;

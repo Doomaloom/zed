@@ -1,1 +1,97 @@
-{"title":"placeholder","summary":"placeholder","steps":[],"flowchart":"flowchart TD\n  a --> b"}
+{
+  "title": "How a code walkthrough is created and shown",
+  "summary": "The agent's `create_walkthrough` call is validated, stored per project, and then drawn by three independent UI pieces that only listen to the store.",
+  "steps": [
+    {
+      "id": "tool-run",
+      "path": "crates/agent/src/tools/create_walkthrough_tool.rs",
+      "start_line": 61,
+      "end_line": 93,
+      "anchor_text": "fn run(",
+      "title": "The agent calls `create_walkthrough`",
+      "comment": "The tool receives the whole walkthrough in **one call** and hands it to `Walkthrough::from_json`. It never edits a file: it only reads buffers and changes UI state, which is why it needs no permission prompt.",
+      "node": "tool"
+    },
+    {
+      "id": "validate",
+      "path": "crates/walkthrough/src/walkthrough.rs",
+      "start_line": 285,
+      "end_line": 313,
+      "anchor_text": "pub fn from_json(",
+      "title": "Validation collects every problem",
+      "comment": "Errors are pushed onto a list instead of returning early, so the agent can fix everything in a single retry. The step count and duplicate ids are checked before any file is opened.",
+      "node": "validate"
+    },
+    {
+      "id": "errors",
+      "path": "crates/agent/src/tools/create_walkthrough_tool.rs",
+      "start_line": 93,
+      "end_line": 106,
+      "anchor_text": "let walkthrough = load.await.map_err(|errors| {",
+      "title": "Errors go back to the agent together",
+      "comment": "On failure nothing is shown to the user. The tool result lists each problem on its own line, phrased so the model can act on it.",
+      "node": "errors"
+    },
+    {
+      "id": "anchor",
+      "path": "crates/walkthrough/src/walkthrough.rs",
+      "start_line": 439,
+      "end_line": 458,
+      "anchor_text": "fn resolve_step_range(",
+      "title": "Line numbers become anchors",
+      "comment": "The agent's 1-based line numbers are checked against the buffer as it is *now*. Further down, `anchor_text` rescues ranges that are off by a few lines, and the result is stored as anchors so it follows later edits.",
+      "node": "anchor"
+    },
+    {
+      "id": "store",
+      "path": "crates/walkthrough/src/walkthrough.rs",
+      "start_line": 730,
+      "end_line": 737,
+      "anchor_text": "pub fn set_walkthrough(",
+      "title": "The store takes ownership",
+      "comment": "One store per project holds the active walkthrough. Setting it mints the id, activates the first step and emits `Created`. Every UI piece reacts to that event; none of them call each other.",
+      "node": "store"
+    },
+    {
+      "id": "editor",
+      "path": "crates/walkthrough_ui/src/editor_addon.rs",
+      "start_line": 93,
+      "end_line": 106,
+      "anchor_text": "fn refresh_annotations(",
+      "title": "Editors annotate themselves",
+      "comment": "Each singleton editor has an addon subscribed to the store. On `Created` or `Dismissed` it first removes the blocks it added, then inserts a comment block below every step in its buffer. Nothing is written to the buffer.",
+      "node": "editor"
+    },
+    {
+      "id": "reveal",
+      "path": "crates/walkthrough_ui/src/navigation.rs",
+      "start_line": 146,
+      "end_line": 183,
+      "anchor_text": "fn reveal_active_step(",
+      "title": "Navigation brings the step into view",
+      "comment": "A single subscriber opens the step's file in a code pane, puts the cursor at the start of the range without selecting it, and scrolls so the range comes first. Next, previous and flowchart clicks all end up here.",
+      "node": "reveal"
+    },
+    {
+      "id": "flowchart",
+      "path": "crates/walkthrough_ui/src/flowchart_view.rs",
+      "start_line": 520,
+      "end_line": 535,
+      "anchor_text": "fn refresh(&mut self, cx: &mut Context<Self>) {",
+      "title": "The flowchart follows the active step",
+      "comment": "The view appends a `style` line for the active step's node and renders that source. Rendered diagrams are cached by source, so going back to a step is instant.",
+      "node": "flowchart"
+    },
+    {
+      "id": "click",
+      "path": "crates/walkthrough_ui/src/flowchart_view.rs",
+      "start_line": 374,
+      "end_line": 394,
+      "anchor_text": "pub(crate) fn node_at<'a>(",
+      "title": "Clicks map back to nodes",
+      "comment": "The diagram is painted as a bitmap, so a click is scaled from view coordinates into the SVG's coordinates and tested against the node rectangles read from the renderer's output.",
+      "node": "click"
+    }
+  ],
+  "flowchart": "flowchart TD\n  tool[Agent calls create_walkthrough] --> validate{Input valid?}\n  validate -- no --> errors[Return all errors to the agent]\n  validate -- yes --> anchor[Resolve lines to anchors]\n  anchor --> store[Store emits Created]\n  store --> editor[Editors add highlights and comment blocks]\n  store --> reveal[Navigation opens the step]\n  store --> flowchart[Flowchart view renders the diagram]\n  flowchart --> click[Node click picks a step]\n  click --> reveal"
+}

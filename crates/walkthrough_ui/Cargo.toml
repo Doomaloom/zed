@@ -34,6 +34,7 @@ walkthrough.workspace = true
 workspace.workspace = true
 
 [dev-dependencies]
+agent = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 indoc.workspace = true

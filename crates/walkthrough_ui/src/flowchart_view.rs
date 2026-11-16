@@ -577,6 +577,26 @@ impl FlowchartView {
         }));
     }
 
+    #[cfg(test)]
+    pub(crate) fn current_source(&self) -> Option<&SharedString> {
+        self.current_source.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rendered_node_ids(&self) -> Option<Vec<String>> {
+        match self.current_diagram()? {
+            DiagramState::Ready(diagram) => Some(
+                diagram
+                    .layout
+                    .nodes
+                    .iter()
+                    .map(|node| node.id.to_string())
+                    .collect(),
+            ),
+            DiagramState::Rendering | DiagramState::Failed(_) => None,
+        }
+    }
+
     fn current_diagram(&self) -> Option<&DiagramState> {
         self.diagrams.get(self.current_source.as_ref()?)
     }
