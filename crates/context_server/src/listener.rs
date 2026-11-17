@@ -52,35 +52,29 @@ type ToolHandler = Box<
 type RequestHandler = Box<dyn Fn(RequestId, Option<Box<RawValue>>, &App) -> Task<String>>;
 
 impl McpServer {
-    pub fn new(cx: &AsyncApp) -> Task<Result<Self>> {
-        let task = cx.background_spawn(async move {
-            let temp_dir = tempfile::Builder::new().prefix("zed-mcp").tempdir()?;
-            let socket_path = temp_dir.path().join("mcp.sock");
-            let listener = UnixListener::bind(&socket_path).context("creating mcp socket")?;
-
-            anyhow::Ok((temp_dir, socket_path, listener))
-        });
-
-        cx.spawn(async move |cx| {
-            let (temp_dir, socket_path, listener) = task.await?;
-            let tools = Rc::new(RefCell::new(HashMap::default()));
-            let handlers = Rc::new(RefCell::new(HashMap::default()));
-            let server_task = cx.spawn({
-                let tools = tools.clone();
-                let handlers = handlers.clone();
-                async move |cx| {
-                    while let Ok((stream, _)) = listener.accept().await {
-                        Self::serve_connection(stream, tools.clone(), handlers.clone(), cx);
-                    }
-                    drop(temp_dir)
+    /// Binds the socket on the calling thread, so that the server's path can
+    /// be handed out as soon as this returns.
+    pub fn new(cx: &App) -> Result<Self> {
+        let temp_dir = tempfile::Builder::new().prefix("zed-mcp").tempdir()?;
+        let socket_path = temp_dir.path().join("mcp.sock");
+        let listener = UnixListener::bind(&socket_path).context("creating mcp socket")?;
+        let tools = Rc::new(RefCell::new(HashMap::default()));
+        let handlers = Rc::new(RefCell::new(HashMap::default()));
+        let server_task = cx.spawn({
+            let tools = tools.clone();
+            let handlers = handlers.clone();
+            async move |cx| {
+                while let Ok((stream, _)) = listener.accept().await {
+                    Self::serve_connection(stream, tools.clone(), handlers.clone(), cx);
                 }
-            });
-            Ok(Self {
-                socket_path,
-                _server_task: server_task,
-                tools,
-                handlers,
-            })
+                drop(temp_dir)
+            }
+        });
+        Ok(Self {
+            socket_path,
+            _server_task: server_task,
+            tools,
+            handlers,
         })
     }
 

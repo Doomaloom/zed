@@ -1,21 +1,14 @@
 # Code walkthroughs: demo
 
-A code walkthrough is an ordered set of agent-written comments pinned to highlighted ranges in normal editor buffers, with a flowchart beside the code. The Zed Agent creates one with the `create_walkthrough` tool. Nothing is written to the files.
+A code walkthrough is an ordered set of agent-written comments pinned to highlighted ranges in normal editor buffers, with a flowchart beside the code. The Zed Agent, and external agents through Zed's `zed` MCP server, create one with the `create_walkthrough` tool. Nothing is written to the files.
 
 This is a prototype. The automated tests cover state and structure; how it looks has not been checked by a person yet. The checklist below is for that.
 
 ## Turning it on
 
-The feature is behind the `walkthrough` feature flag.
+The `walkthrough` feature flag is enabled for all users in this fork, so the feature is on in every build.
 
-- In a debug build (`cargo run`) it is on.
-- In any other build, add this to `settings.json`:
-
-  ```json
-  { "feature_flags": { "walkthrough": "on" } }
-  ```
-
-The tool is enabled in the default Write and Ask profiles. Only the Zed Agent has it; external agents do not.
+The Zed Agent has the tool in the default Write and Ask profiles. External agents (Copilot, Claude Agent, Codex, Gemini CLI and other ACP agents) get the same tool from an MCP server named `zed` that Zed adds to their sessions automatically. This works on Linux and macOS, for local projects.
 
 ## Try it without an agent
 
@@ -37,6 +30,8 @@ What should happen:
 2. The file for step 1 opens and scrolls to its range. The range is highlighted and a comment block sits under it showing "1 / N", the step title and the explanation.
 3. A flowchart tab opens in a split to the right, with the node for step 1 highlighted and a step list under the diagram.
 4. The agent replies in chat with a sentence or two and does not repeat the explanation.
+
+The same prompt works in an external agent thread. There the call shows up as the `create_walkthrough` tool of the `zed` server, and the agent may ask for permission to use it.
 
 ## Actions
 
@@ -76,6 +71,11 @@ All except the last are available only while a walkthrough is active. Each comme
 
 - The full `zed` binary was not built or launched during development (missing ALSA headers on the build machine). Confirm `cargo run` starts before working through the checklist.
 - No visual regression test. The runner in `crates/zed` is macOS-only and this was built on Linux.
+- Not available on Windows. The `zed` MCP server needs Unix sockets.
+- Not available for remote (SSH) projects. The `zed` MCP server is added for local projects only.
+- Not added if you already have a context server named `zed`. Rename yours to get the walkthrough tool.
+- With ACP v2 agents, the server is only added if the agent advertises stdio MCP support.
+- Not verified against each external agent by a person yet. The MCP server's tests were written but not run, and the bridge (`zed --nc <socket>`) has not been exercised end to end.
 - Multibuffer editors (project search, diagnostics, diffs) are not annotated.
 - A walkthrough lives in memory: it is gone after a restart and is not shared with collaborators.
 - The flowchart has no pan or zoom.

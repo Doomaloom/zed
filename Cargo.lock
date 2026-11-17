@@ -385,6 +385,7 @@ dependencies = [
  "chrono",
  "client",
  "collections",
+ "context_server",
  "env_logger 0.11.8",
  "feature_flags",
  "fs",
@@ -409,6 +410,7 @@ dependencies = [
  "ui",
  "util",
  "uuid",
+ "walkthrough",
  "watch",
  "zed_credentials_provider",
 ]
@@ -11213,6 +11215,16 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "nc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "net",
+ "smol",
 ]
 
 [[package]]
@@ -22637,6 +22649,7 @@ dependencies = [
  "migrator",
  "mimalloc",
  "miniprofiler_ui",
+ "nc",
  "nix 0.30.1",
  "node_runtime",
  "notifications",

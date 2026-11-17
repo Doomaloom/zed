@@ -128,6 +128,10 @@ impl FeatureFlag for WalkthroughFeatureFlag {
     const NAME: &'static str = "walkthrough";
     type Value = PresenceFlag;
 
+    fn enabled_for_all() -> bool {
+        true
+    }
+
     fn enabled_for_staff() -> bool {
         true
     }

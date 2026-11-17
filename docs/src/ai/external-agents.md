@@ -199,6 +199,8 @@ Zed-configured [MCP servers](./mcp.md) may be forwarded to External Agents over 
 
 If an MCP tool does not appear in an External Agent, check both Zed's MCP server configuration and the agent's native MCP configuration.
 
+In this fork, Zed also adds its own MCP server, named `zed`, to External Agent sessions. It currently offers the `create_walkthrough` tool, which shows code walkthroughs in the editor. It is added on Linux and macOS for local projects, and is skipped if you already have a context server named `zed`.
+
 ## Debugging {#debugging-agents}
 
 Use {#action dev::OpenAcpLogs} from the Command Palette to inspect messages between Zed and an External Agent.

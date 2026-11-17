@@ -6,10 +6,10 @@
       "id": "tool-run",
       "path": "crates/agent/src/tools/create_walkthrough_tool.rs",
       "start_line": 61,
-      "end_line": 93,
+      "end_line": 81,
       "anchor_text": "fn run(",
       "title": "The agent calls `create_walkthrough`",
-      "comment": "The tool receives the whole walkthrough in **one call** and hands it to `Walkthrough::from_json`. It never edits a file: it only reads buffers and changes UI state, which is why it needs no permission prompt.",
+      "comment": "The tool receives the whole walkthrough in **one call** and hands it to `walkthrough::show_walkthrough`, which calls `Walkthrough::from_json`. It never edits a file: it only reads buffers and changes UI state, which is why it needs no permission prompt.",
       "node": "tool",
       "color": "blue"
     },
@@ -34,18 +34,18 @@
     },
     {
       "id": "errors",
-      "path": "crates/agent/src/tools/create_walkthrough_tool.rs",
-      "start_line": 93,
-      "end_line": 106,
+      "path": "crates/walkthrough/src/walkthrough.rs",
+      "start_line": 1092,
+      "end_line": 1105,
       "anchor_text": "let walkthrough = load.await.map_err(|errors| {",
       "title": "Errors go back to the agent together",
-      "comment": "On failure nothing is shown to the user. The tool result lists each problem on its own line, phrased so the model can act on it.",
+      "comment": "On failure nothing is shown to the user. The message returned to the agent lists each problem on its own line, phrased so the model can act on it.",
       "node": "errors",
-      "color": "blue",
+      "color": "green",
       "highlights": [
         {
-          "start_line": 93,
-          "end_line": 93,
+          "start_line": 1092,
+          "end_line": 1092,
           "text": "map_err(|errors|",
           "color": "yellow"
         }

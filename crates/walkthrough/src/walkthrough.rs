@@ -1064,6 +1064,61 @@ pub struct GlobalFlowchartCheck(pub FlowchartCheck);
 
 impl Global for GlobalFlowchartCheck {}
 
+/// Validates `json` against `project` and, when it is valid, makes it the
+/// project's active walkthrough. Returns the message to give the calling
+/// agent: a confirmation on success, or every problem found on failure.
+pub fn show_walkthrough(
+    json: WalkthroughJson,
+    project: &Entity<Project>,
+    cx: &mut App,
+) -> Task<Result<String, String>> {
+    let project = project.clone();
+    // Without a UI layer there is no renderer to validate against, and
+    // nothing that would later fail to draw the flowchart.
+    let flowchart_check = cx
+        .try_global::<GlobalFlowchartCheck>()
+        .map(|check| check.0.clone());
+    let load = Walkthrough::from_json(
+        json,
+        &project,
+        move |source| match flowchart_check {
+            Some(check) => check(source),
+            None => Ok(()),
+        },
+        cx,
+    );
+
+    cx.spawn(async move |cx| {
+        let walkthrough = load.await.map_err(|errors| {
+            let mut error = format!(
+                "The walkthrough was not shown. Fix {} and call the tool again:",
+                if errors.len() == 1 {
+                    "this problem".to_string()
+                } else {
+                    format!("these {} problems", errors.len())
+                }
+            );
+            for step_error in errors {
+                error.push_str(&format!("\n- {step_error}"));
+            }
+            error
+        })?;
+
+        let step_count = walkthrough.steps.len();
+        let file_count = walkthrough.file_count();
+        cx.update(|cx| {
+            WalkthroughStore::for_project(&project, cx)
+                .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
+        });
+
+        Ok(format!(
+            "Walkthrough shown to the user: {step_count} {} across {file_count} {}.",
+            if step_count == 1 { "step" } else { "steps" },
+            if file_count == 1 { "file" } else { "files" },
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1721,5 +1776,38 @@ mod tests {
             serde_json::from_str(include_str!("../test_fixtures/sample.json"))
                 .expect("fixture should deserialize");
         assert!(fixture.flowchart.is_some());
+    }
+
+    #[gpui::test]
+    async fn test_show_walkthrough_activates_valid_walkthrough(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+
+        let invalid = walkthrough_json(vec![
+            step("a", "root/src/missing.rs", 1, 2),
+            step("b", "root/src/two.rs", 3, 5),
+        ]);
+        let result = cx
+            .update(|cx| show_walkthrough(invalid, &project, cx))
+            .await;
+        assert_eq!(
+            result.as_ref().map_err(String::as_str),
+            Err(indoc! {"
+                The walkthrough was not shown. Fix this problem and call the tool again:
+                - Step `a`: `root/src/missing.rs` is not a file in the project"}
+            .trim_end())
+        );
+        assert!(store.read_with(cx, |store, _| store.active().is_none()));
+
+        let valid = walkthrough_json(vec![
+            step("a", "root/src/one.rs", 1, 2),
+            step("b", "root/src/two.rs", 3, 5),
+        ]);
+        let result = cx.update(|cx| show_walkthrough(valid, &project, cx)).await;
+        assert_eq!(
+            result.as_deref(),
+            Ok("Walkthrough shown to the user: 2 steps across 2 files.")
+        );
+        assert!(store.read_with(cx, |store, _| store.active().is_some()));
     }
 }

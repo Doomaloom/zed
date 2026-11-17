@@ -47,6 +47,7 @@ use acp_thread::{AcpThread, LoadError, TerminalProviderEvent};
 use terminal::TerminalBuilder;
 use terminal::terminal_settings::{AlternateScroll, CursorShape};
 
+use crate::zed_mcp_server::{ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project};
 use crate::{CURSOR_ID, GEMINI_ID};
 
 pub const GEMINI_TERMINAL_AUTH_METHOD_ID: &str = "spawn-gemini-cli";
@@ -1343,7 +1344,8 @@ impl AgentConnection for AcpConnection {
             Err(error) => return Task::ready(Err(error)),
         };
         let name = self.id.0.clone();
-        let mcp_servers = mcp_servers_for_project(&project, cx);
+        let mut mcp_servers = mcp_servers_for_project(&project, cx);
+        push_zed_mcp_server(&mut mcp_servers, zed_mcp_server_for_project(&project, cx));
         let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
 
         cx.spawn(async move |cx| {
@@ -1535,7 +1537,8 @@ impl AgentConnection for AcpConnection {
             ))));
         }
 
-        let mcp_servers = mcp_servers_for_project(&project, cx);
+        let mut mcp_servers = mcp_servers_for_project(&project, cx);
+        push_zed_mcp_server(&mut mcp_servers, zed_mcp_server_for_project(&project, cx));
         self.open_or_create_session(
             session_id,
             project,
@@ -1579,7 +1582,8 @@ impl AgentConnection for AcpConnection {
             ))));
         }
 
-        let mcp_servers = mcp_servers_for_project(&project, cx);
+        let mut mcp_servers = mcp_servers_for_project(&project, cx);
+        push_zed_mcp_server(&mut mcp_servers, zed_mcp_server_for_project(&project, cx));
         self.open_or_create_session(
             session_id,
             project,
@@ -10063,6 +10067,17 @@ fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpS
             ),
         })
         .collect()
+}
+
+fn push_zed_mcp_server(
+    mcp_servers: &mut Vec<acp::McpServer>,
+    command: Option<ZedMcpServerCommand>,
+) {
+    if let Some(command) = command {
+        mcp_servers.push(acp::McpServer::Stdio(
+            acp::McpServerStdio::new(ZED_MCP_SERVER_NAME, command.path).args(command.args),
+        ));
+    }
 }
 
 fn config_state(

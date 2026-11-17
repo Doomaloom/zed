@@ -37,6 +37,8 @@ use task::SpawnInTerminal;
 use util::ResultExt as _;
 use util::path_list::PathList;
 
+use crate::zed_mcp_server::{ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project};
+
 fn is_connection_closed(connection: &V2ConnectionTo<Agent>) -> bool {
     connection.is_incoming_closed() || connection.termination().is_some()
 }
@@ -643,10 +645,7 @@ impl AcpV2Connection {
             match &*configuration {
                 ContextServerConfiguration::Custom { command, .. }
                 | ContextServerConfiguration::Extension { command, .. }
-                    if capabilities
-                        .mcp
-                        .as_ref()
-                        .is_some_and(|mcp| mcp.stdio.is_some()) =>
+                    if self.supports_stdio_mcp_servers() =>
                 {
                     anyhow::ensure!(
                         is_absolute(&command.path),
@@ -688,6 +687,31 @@ impl AcpV2Connection {
             additional_directories: additional_directories.into_iter().map(Into::into).collect(),
             mcp_servers: servers,
         })
+    }
+
+    fn supports_stdio_mcp_servers(&self) -> bool {
+        self.initialize_response
+            .capabilities
+            .session
+            .as_ref()
+            .and_then(|capabilities| capabilities.mcp.as_ref())
+            .is_some_and(|mcp| mcp.stdio.is_some())
+    }
+
+    fn add_zed_mcp_server(
+        &self,
+        context: &mut SessionContext,
+        command: Option<ZedMcpServerCommand>,
+        is_absolute: impl Fn(&std::path::Path) -> bool,
+    ) {
+        let Some(command) = command else {
+            return;
+        };
+        if self.supports_stdio_mcp_servers() && is_absolute(&command.path) {
+            context.mcp_servers.push(acp::McpServer::Stdio(
+                acp::McpServerStdio::new(ZED_MCP_SERVER_NAME, command.path).args(command.args),
+            ));
+        }
     }
 
     fn remove_session(&self, session_id: &acp::SessionId, thread_id: gpui::EntityId) {
@@ -992,7 +1016,7 @@ impl AcpV2Connection {
             )));
         }
         let path_style = project.read(cx).path_style(cx);
-        let context = match self.session_context(
+        let mut context = match self.session_context(
             mcp_configurations_for_project(&project, cx),
             &work_dirs,
             |path| path_style.is_absolute(path),
@@ -1000,6 +1024,10 @@ impl AcpV2Connection {
             Ok(context) => context,
             Err(error) => return Task::ready(Err(error)),
         };
+        let zed_mcp_server = zed_mcp_server_for_project(&project, cx);
+        self.add_zed_mcp_server(&mut context, zed_mcp_server, |path| {
+            path_style.is_absolute(path)
+        });
         let existing = self.session_owners.borrow().get(&session_id).map(|owner| {
             (
                 owner.thread.clone(),
@@ -1325,7 +1353,7 @@ impl AgentConnection for AcpV2Connection {
         cx: &mut App,
     ) -> Task<Result<Entity<AcpThread>>> {
         let path_style = project.read(cx).path_style(cx);
-        let context = match self.session_context(
+        let mut context = match self.session_context(
             mcp_configurations_for_project(&project, cx),
             &work_dirs,
             |path| path_style.is_absolute(path),
@@ -1333,6 +1361,10 @@ impl AgentConnection for AcpV2Connection {
             Ok(context) => context,
             Err(error) => return Task::ready(Err(error)),
         };
+        let zed_mcp_server = zed_mcp_server_for_project(&project, cx);
+        self.add_zed_mcp_server(&mut context, zed_mcp_server, |path| {
+            path_style.is_absolute(path)
+        });
         let mut request = acp::NewSessionRequest::new(context.cwd.clone())
             .additional_directories(context.additional_directories.clone())
             .mcp_servers(context.mcp_servers.clone());

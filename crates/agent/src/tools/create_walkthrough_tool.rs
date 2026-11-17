@@ -5,7 +5,7 @@ use language_model::LanguageModelToolResultContent;
 use project::Project;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use walkthrough::{GlobalFlowchartCheck, Walkthrough, WalkthroughJson, WalkthroughStore};
+use walkthrough::WalkthroughJson;
 
 /// The tool's description is the doc comment on [`WalkthroughJson`], which is
 /// shared with the walkthrough fixture loader.
@@ -73,52 +73,10 @@ impl AgentTool for CreateWalkthroughTool {
                     error: error.to_string(),
                 })?;
 
-            let load = cx.update(|cx| {
-                // Without a UI layer there is no renderer to validate
-                // against, and nothing that would later fail to draw it.
-                let flowchart_check = cx
-                    .try_global::<GlobalFlowchartCheck>()
-                    .map(|check| check.0.clone());
-                Walkthrough::from_json(
-                    input,
-                    &project,
-                    move |source| match flowchart_check {
-                        Some(check) => check(source),
-                        None => Ok(()),
-                    },
-                    cx,
-                )
-            });
-
-            let walkthrough = load.await.map_err(|errors| {
-                let mut error = format!(
-                    "The walkthrough was not shown. Fix {} and call the tool again:",
-                    if errors.len() == 1 {
-                        "this problem".to_string()
-                    } else {
-                        format!("these {} problems", errors.len())
-                    }
-                );
-                for step_error in errors {
-                    error.push_str(&format!("\n- {step_error}"));
-                }
-                CreateWalkthroughToolOutput::Error { error }
-            })?;
-
-            let step_count = walkthrough.steps.len();
-            let file_count = walkthrough.file_count();
-            cx.update(|cx| {
-                WalkthroughStore::for_project(&project, cx)
-                    .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
-            });
-
-            Ok(CreateWalkthroughToolOutput::Success {
-                message: format!(
-                    "Walkthrough shown to the user: {step_count} {} across {file_count} {}.",
-                    if step_count == 1 { "step" } else { "steps" },
-                    if file_count == 1 { "file" } else { "files" },
-                ),
-            })
+            cx.update(|cx| walkthrough::show_walkthrough(input, &project, cx))
+                .await
+                .map(|message| CreateWalkthroughToolOutput::Success { message })
+                .map_err(|error| CreateWalkthroughToolOutput::Error { error })
         })
     }
 }
@@ -131,7 +89,7 @@ mod tests {
     use serde_json::json;
     use settings::SettingsStore;
     use util::path;
-    use walkthrough::HighlightColor;
+    use walkthrough::{GlobalFlowchartCheck, HighlightColor, WalkthroughStore};
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {

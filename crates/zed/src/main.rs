@@ -228,6 +228,17 @@ fn main() {
         return;
     }
 
+    // `zed --nc` Makes zed operate in nc/netcat mode for use with MCP
+    if let Some(socket) = &args.nc {
+        match nc::main(socket) {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                process::exit(1);
+            }
+        }
+    }
+
     // `zed --crash-handler` Makes zed operate in minidump crash handler mode
     if let Some(socket) = &args.crash_handler {
         crashes::crash_server(socket.as_path(), paths::logs_dir().clone());
@@ -2241,6 +2252,11 @@ struct Args {
     #[cfg(not(target_os = "windows"))]
     #[arg(hide = true)]
     askpass: Option<String>,
+
+    /// Connects stdin/stdout to a Unix socket, so that external agents can reach
+    /// the MCP server that Zed runs in-process.
+    #[arg(long, hide = true)]
+    nc: Option<String>,
 
     #[arg(long, hide = true)]
     dump_all_actions: bool,
