@@ -8,7 +8,7 @@ This is a prototype. The automated tests cover state and structure; how it looks
 
 The `walkthrough` feature flag is enabled for all users in this fork, so the feature is on in every build.
 
-The Zed Agent has the tool in the default Write and Ask profiles. External agents (Copilot, Claude Agent, Codex, Gemini CLI and other ACP agents) get the same tool from an MCP server named `zed` that Zed adds to their sessions automatically. This works on Linux and macOS, for local projects.
+The Zed Agent has the tool in the default Write and Ask profiles. External agents (Copilot, Claude Agent, Codex, Gemini CLI and other ACP agents) get the same tool from an MCP server named `zed` that Zed adds to their sessions automatically. This works for local projects on Linux and macOS. It also targets Windows, but that path has never been compiled or run there.
 
 ## Try it without an agent
 
@@ -71,7 +71,7 @@ All except the last are available only while a walkthrough is active. Each comme
 
 - The full `zed` binary was not built or launched during development (missing ALSA headers on the build machine). Confirm `cargo run` starts before working through the checklist.
 - No visual regression test. The runner in `crates/zed` is macOS-only and this was built on Linux.
-- Not available on Windows. The `zed` MCP server needs Unix sockets.
+- The `zed` MCP server also targets Windows (it uses the `net` crate's Unix socket support), but that path is untested: it has never been compiled or run on Windows.
 - Not available for remote (SSH) projects. The `zed` MCP server is added for local projects only.
 - Not added if you already have a context server named `zed`. Rename yours to get the walkthrough tool.
 - With ACP v2 agents, the server is only added if the agent advertises stdio MCP support.

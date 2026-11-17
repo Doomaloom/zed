@@ -11222,9 +11222,7 @@ name = "nc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "futures 0.3.34",
  "net",
- "smol",
 ]
 
 [[package]]
