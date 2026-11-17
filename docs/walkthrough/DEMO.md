@@ -75,7 +75,7 @@ All except the last are available only while a walkthrough is active. Each comme
 - Not available for remote (SSH) projects. The `zed` MCP server is added for local projects only.
 - Not added if you already have a context server named `zed`. Rename yours to get the walkthrough tool.
 - With ACP v2 agents, the server is only added if the agent advertises stdio MCP support.
-- Not verified against each external agent by a person yet. The MCP server's tests were written but not run, and the bridge (`zed --nc <socket>`) has not been exercised end to end.
+- Not verified against each external agent by a person yet. The MCP server's tests pass, but the bridge (`zed --nc <socket>`) has not been exercised end to end with a real agent.
 - Multibuffer editors (project search, diagnostics, diffs) are not annotated.
 - A walkthrough lives in memory: it is gone after a restart and is not shared with collaborators.
 - The flowchart has no pan or zoom.
