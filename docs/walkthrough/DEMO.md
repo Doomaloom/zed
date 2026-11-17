@@ -56,6 +56,9 @@ All except the last are available only while a walkthrough is active. Each comme
 - [ ] Step 1's file opens, the range is highlighted, and the comment block is readable, correctly sized, and wraps at the editor width.
 - [ ] A long comment scrolls inside its block instead of growing past about 14 lines.
 - [ ] The active step's highlight and left border are clearly stronger than the others.
+- [ ] Coloured steps and inner highlights use the colours named in the walkthrough, inner highlights are stronger in the active step, and each comment block lists the legend labels for the colours it uses.
+- [ ] The flowchart panel shows the full legend above the step list and a dot beside each coloured step.
+- [ ] A walkthrough with no colours looks the same as before.
 - [ ] Next and previous move across at least two files, and the flowchart highlight follows.
 - [ ] The flowchart opens to the right and focus stays in the code editor.
 - [ ] Clicking a step row jumps to its code. Clicking a flowchart node does the same, and the pointer changes over clickable nodes.
@@ -66,7 +69,7 @@ All except the last are available only while a walkthrough is active. Each comme
 - [ ] Scrolling a 5,000-line file with 12 steps stays smooth.
 - [ ] Dismiss removes everything, and the files show no modifications.
 - [ ] Creating a second walkthrough replaces the first cleanly.
-- [ ] Light and dark themes are both readable, in the editor and in the flowchart.
+- [ ] Light and dark themes are both readable, in the editor and in the flowchart, including all six highlight colours.
 - [ ] `ctrl-alt-]` and `ctrl-alt-[` do not get in the way of typing on your keyboard layout.
 
 ## Known gaps
@@ -80,4 +83,4 @@ All except the last are available only while a walkthrough is active. Each comme
 
 ## Changes inside `crates/editor`
 
-For the upstream proposal: the only change is two variants added to `HighlightKey` in `crates/editor/src/display_map.rs` (`WalkthroughStep`, `WalkthroughActiveStep`). Everything else uses the editor's public API from `crates/walkthrough_ui`.
+For the upstream proposal: the only change is three variants added to `HighlightKey` in `crates/editor/src/display_map.rs` (`WalkthroughStep`, `WalkthroughActiveStep`, `WalkthroughHighlight`). Everything else uses the editor's public API from `crates/walkthrough_ui`.

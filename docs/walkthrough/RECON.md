@@ -8,7 +8,7 @@ This resolves every _(verify)_ in the technical spec against the checked-out cod
 | --- | --- | --- |
 | Mermaid is rendered by a `mermaid-rs-renderer` fork | The renderer is `merman`, wrapped by `crates/mermaid_render` | Call `mermaid_render::render_to_svg` directly |
 | `MermaidState` and `CachedMermaidDiagram` in `crates/markdown/src/mermaid.rs` can be reused | Both are private (`pub(crate)` and private) and tied to a `Markdown` entity | `FlowchartView` has its own small cache keyed by source and calls the renderer itself (the spec's first choice) |
-| `editor.highlight_background::<Marker>(…)` keyed by a marker type | Highlights are keyed by the `HighlightKey` enum | Added `HighlightKey::WalkthroughStep` and `HighlightKey::WalkthroughActiveStep` (the only change inside `crates/editor`) |
+| `editor.highlight_background::<Marker>(…)` keyed by a marker type | Highlights are keyed by the `HighlightKey` enum | Added `HighlightKey::WalkthroughStep`, `HighlightKey::WalkthroughActiveStep` and `HighlightKey::WalkthroughHighlight` (the only change inside `crates/editor`) |
 | Block `height` may need estimating and `resize_blocks` on width changes | `height` is `Option<u32>` and the editor measures every custom block on layout, resizing it to fit | Blocks start at 2 rows and the editor corrects them; no manual resizing |
 | `AgentTool::name()` returns the tool name | The name is `const NAME: &'static str`; `kind()` and `description()` are associated functions | Implemented as the trait defines |
 | `parse_check(mermaid: &str) -> Result<(), String>` | Rendering needs an `SvgRenderer` to measure text | `parse_check(mermaid, &SvgRenderer)`; `flowchart_view::init` registers it as `walkthrough::GlobalFlowchartCheck` so `agent` can reach it without depending on a UI crate |
@@ -45,7 +45,10 @@ This resolves every _(verify)_ in the technical spec against the checked-out cod
 - `Editor::highlight_background(key: HighlightKey, ranges: &[Range<Anchor>], color_fetcher: impl Fn(&usize, &Theme) -> Hsla + Send + Sync + 'static, cx)`.
 - `Editor::clear_background_highlights(key, cx)`.
 - Ranges should be sorted by position. A buffer range is lifted to editor anchors with `MultiBufferSnapshot::anchor_range_in_buffer`.
-- Colours used: `editor_document_highlight_read_background` for inactive steps and `text_accent` at 18% opacity for the active step. No new theme keys.
+- Colours used for steps without a colour: `editor_document_highlight_read_background` for inactive steps and `text_accent` at 18% opacity for the active step. No new theme keys.
+- The colour callback receives each range's index in the slice, so one key carries many colours. Steps and their inner highlights (`HighlightKey::WalkthroughHighlight`) each pass a parallel list of styles.
+- The agent picks from six names (`blue`, `green`, `yellow`, `orange`, `red`, `purple`) and must explain each one it uses in the walkthrough's `legend`. `highlight_hsla` in `editor_addon.rs` maps a name to the built-in accent scale for the theme's appearance (`AccentColors::light()` / `dark()`), not to the theme's own accents, so the hue always matches the name.
+- Opacity: a coloured step is 8% when inactive and 18% when active; an inner highlight is 15% and 35%.
 
 ## Observing new editors and per-editor state
 

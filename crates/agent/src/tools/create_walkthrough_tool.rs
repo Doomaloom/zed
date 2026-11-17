@@ -131,6 +131,7 @@ mod tests {
     use serde_json::json;
     use settings::SettingsStore;
     use util::path;
+    use walkthrough::HighlightColor;
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -168,7 +169,11 @@ mod tests {
                     "anchor_text": "fn authenticate(",
                     "title": "Authenticate the request",
                     "comment": "Parses and verifies the token.",
-                    "node": "auth"
+                    "node": "auth",
+                    "color": "blue",
+                    "highlights": [
+                        { "start_line": 1, "end_line": 1, "text": "authenticate", "color": "red" }
+                    ]
                 },
                 {
                     "id": "verify",
@@ -188,7 +193,11 @@ mod tests {
                     "node": "handler"
                 }
             ],
-            "flowchart": "flowchart TD\n  auth[Authenticate] --> handler[Run handler]"
+            "flowchart": "flowchart TD\n  auth[Authenticate] --> handler[Run handler]",
+            "legend": [
+                { "color": "blue", "label": "Entry point" },
+                { "color": "red", "label": "Can reject" }
+            ]
         })
     }
 
@@ -231,6 +240,14 @@ mod tests {
             let walkthrough = store.active().expect("walkthrough should be active");
             assert_eq!(walkthrough.title.as_ref(), "How request auth works");
             assert_eq!(walkthrough.steps.len(), 3);
+            assert_eq!(walkthrough.steps[0].color, Some(HighlightColor::Blue));
+            assert_eq!(walkthrough.steps[0].highlights.len(), 1);
+            assert_eq!(
+                walkthrough
+                    .legend_label(HighlightColor::Red)
+                    .map(|label| label.as_ref()),
+                Some("Can reject")
+            );
             assert_eq!(
                 walkthrough
                     .flowchart
@@ -288,6 +305,19 @@ mod tests {
                 The walkthrough was not shown. Fix these 2 problems and call the tool again:
                 - Step `authenticate`: anchor_text `fn elsewhere(` was not found within 20 lines of line 1; re-read the file and correct the line numbers
                 - Step `handle`: `nowhere` is not a node id in the flowchart"}
+            .trim_end())
+        );
+
+        let mut input = valid_input();
+        input["steps"][1]["color"] = json!("green");
+        input["steps"][0]["highlights"][0]["text"] = json!("fn elsewhere");
+        let error = run_tool(input, &project, cx).await;
+        assert_eq!(
+            error.as_ref().map_err(String::as_str),
+            Err(indoc::indoc! {"
+                The walkthrough was not shown. Fix these 2 problems and call the tool again:
+                - the color `green` is used but has no entry in `legend`
+                - Step `authenticate`: highlight text `fn elsewhere` was not found in lines 1-1"}
             .trim_end())
         );
 

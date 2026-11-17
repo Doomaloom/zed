@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::editor_addon::{highlight_hsla, legend_chip};
 use anyhow::{Context as _, Result, anyhow};
 use collections::HashMap;
 use feature_flags::{FeatureFlagAppExt as _, WalkthroughFeatureFlag};
@@ -723,7 +724,20 @@ impl FlowchartView {
                 .child(
                     v_flex()
                         .min_w_0()
-                        .child(Label::new(step.title.clone()))
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .when_some(step.color, |this, color| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .size_2()
+                                            .rounded_full()
+                                            .bg(highlight_hsla(color, cx.theme())),
+                                    )
+                                })
+                                .child(Label::new(step.title.clone())),
+                        )
                         .child(
                             Label::new(location)
                                 .size(LabelSize::Small)
@@ -732,7 +746,21 @@ impl FlowchartView {
                 )
                 .on_click(move |_, window, cx| go_to_step(&step_id, window, cx))
         });
-        Some(v_flex().gap_0p5().children(rows).into_any_element())
+        let legend = (!walkthrough.legend.is_empty()).then(|| {
+            h_flex().px_2().pb_1().gap_3().flex_wrap().children(
+                walkthrough
+                    .legend
+                    .iter()
+                    .map(|entry| legend_chip(entry.color, entry.label.clone(), cx)),
+            )
+        });
+        Some(
+            v_flex()
+                .gap_0p5()
+                .children(legend)
+                .children(rows)
+                .into_any_element(),
+        )
     }
 }
 

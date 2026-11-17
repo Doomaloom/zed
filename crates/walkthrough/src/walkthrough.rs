@@ -14,6 +14,7 @@ pub const MIN_STEPS: usize = 1;
 pub const MAX_STEPS: usize = 30;
 pub const MAX_STEP_LINES: u32 = 60;
 pub const ANCHOR_TEXT_SEARCH_RADIUS: u32 = 20;
+pub const MAX_STEP_HIGHLIGHTS: usize = 8;
 
 actions!(
     walkthrough,
@@ -67,6 +68,7 @@ pub struct Walkthrough {
     pub summary: SharedString,
     pub steps: Vec<WalkthroughStep>,
     pub flowchart: Option<Flowchart>,
+    pub legend: Vec<LegendEntry>,
 }
 
 impl Walkthrough {
@@ -74,6 +76,13 @@ impl Walkthrough {
         self.steps
             .iter()
             .position(|candidate| &candidate.id == step)
+    }
+
+    pub fn legend_label(&self, color: HighlightColor) -> Option<&SharedString> {
+        self.legend
+            .iter()
+            .find(|entry| entry.color == color)
+            .map(|entry| &entry.label)
     }
 
     pub fn file_count(&self) -> usize {
@@ -94,9 +103,38 @@ pub struct WalkthroughStep {
     pub title: SharedString,
     pub comment: SharedString,
     pub node_id: Option<SharedString>,
+    pub color: Option<HighlightColor>,
+    pub highlights: Vec<StepHighlight>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepHighlight {
+    pub range: Range<language::Anchor>,
+    pub color: HighlightColor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegendEntry {
+    pub color: HighlightColor,
+    pub label: SharedString,
 }
 
 impl WalkthroughStep {
+    /// The colors this step uses, in the order they first appear.
+    pub fn colors(&self) -> Vec<HighlightColor> {
+        let mut colors = Vec::new();
+        for color in self
+            .color
+            .into_iter()
+            .chain(self.highlights.iter().map(|highlight| highlight.color))
+        {
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors
+    }
+
     /// A step is stale once the code it annotated has been deleted, which
     /// collapses its anchors onto the same position.
     pub fn is_stale(&self, cx: &App) -> bool {
@@ -143,6 +181,9 @@ pub enum WalkthroughEvent {
 /// - Use 3 to 12 steps. Each comment says why the code exists or what to notice. It never restates the code line by line.
 /// - Keep ranges tight: the function signature or the 5 to 25 lines that matter.
 /// - Include a flowchart when the code has branching or several stages. Use `flowchart TD`, at most 15 nodes, simple alphanumeric node ids that are not Mermaid keywords (such as `end`, `click`, `style`, `class`, `graph` or `flowchart`), and link each step to a node where one fits.
+/// - Color is optional. Use it only when it carries meaning, such as input versus mutation versus error path, or one color per subsystem. Keep one meaning per color across the whole walkthrough and use at most 4 colors.
+/// - Every color you use must have an entry in `legend` with a label of 1 to 4 words. The legend is shown to the user.
+/// - Use a step's `highlights` to mark the exact expression or lines a comment talks about, and refer to them in the comment by their legend label.
 /// - After the walkthrough is shown, reply with one or two sentences. Do not repeat the explanation in chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WalkthroughJson {
@@ -155,6 +196,61 @@ pub struct WalkthroughJson {
     /// Mermaid source for a flowchart of the code being explained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flowchart: Option<String>,
+    /// What each color means in this walkthrough. One entry for every color
+    /// used by a step or a highlight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legend: Vec<LegendEntryJson>,
+}
+
+/// A highlight color. The meaning of each color is given by the walkthrough's `legend`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HighlightColor {
+    Blue,
+    Green,
+    Yellow,
+    Orange,
+    Red,
+    Purple,
+}
+
+impl HighlightColor {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Orange => "orange",
+            Self::Red => "red",
+            Self::Purple => "purple",
+        }
+    }
+}
+
+impl std::fmt::Display for HighlightColor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LegendEntryJson {
+    pub color: HighlightColor,
+    /// What this color means in this walkthrough, in 1 to 4 words.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StepHighlightJson {
+    /// The first line of the highlight (1-based, inclusive). Must lie within the step's range.
+    pub start_line: u32,
+    /// The last line of the highlight (1-based, inclusive). Must lie within the step's range.
+    pub end_line: u32,
+    /// When given, only the first occurrence of this exact text within the
+    /// lines is highlighted. Otherwise the whole lines are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub color: HighlightColor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -180,6 +276,12 @@ pub struct WalkthroughStepJson {
     /// The id of the flowchart node this step corresponds to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The color of this step's range. Steps without one use the default highlight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<HighlightColor>,
+    /// Smaller colored highlights inside this step's range. At most 8.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub highlights: Vec<StepHighlightJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +323,24 @@ pub enum StepErrorKind {
     },
     UnknownNode {
         node: String,
+    },
+    TooManyHighlights {
+        count: usize,
+    },
+    HighlightOutsideStep {
+        start_line: u32,
+        end_line: u32,
+    },
+    HighlightTextNotFound {
+        text: String,
+        start_line: u32,
+        end_line: u32,
+    },
+    DuplicateLegendColor {
+        color: HighlightColor,
+    },
+    ColorWithoutLegend {
+        color: HighlightColor,
     },
 }
 
@@ -271,6 +391,32 @@ impl std::fmt::Display for StepError {
             StepErrorKind::UnknownNode { node } => {
                 write!(formatter, "`{node}` is not a node id in the flowchart")
             }
+            StepErrorKind::TooManyHighlights { count } => write!(
+                formatter,
+                "a step can have at most {MAX_STEP_HIGHLIGHTS} highlights, but {count} were given"
+            ),
+            StepErrorKind::HighlightOutsideStep {
+                start_line,
+                end_line,
+            } => write!(
+                formatter,
+                "highlight lines {start_line}-{end_line} are not a valid range within the step's lines"
+            ),
+            StepErrorKind::HighlightTextNotFound {
+                text,
+                start_line,
+                end_line,
+            } => write!(
+                formatter,
+                "highlight text `{text}` was not found in lines {start_line}-{end_line}"
+            ),
+            StepErrorKind::DuplicateLegendColor { color } => {
+                write!(formatter, "the legend lists `{color}` more than once")
+            }
+            StepErrorKind::ColorWithoutLegend { color } => write!(
+                formatter,
+                "the color `{color}` is used but has no entry in `legend`"
+            ),
         }
     }
 }
@@ -306,6 +452,30 @@ impl Walkthrough {
                 errors.push(StepError {
                     step: Some(step.id.clone()),
                     kind: StepErrorKind::DuplicateId,
+                });
+            }
+        }
+
+        let mut legend_colors = HashSet::default();
+        let mut reported_colors = HashSet::default();
+        for entry in &json.legend {
+            if !legend_colors.insert(entry.color) && reported_colors.insert(entry.color) {
+                errors.push(StepError {
+                    step: None,
+                    kind: StepErrorKind::DuplicateLegendColor { color: entry.color },
+                });
+            }
+        }
+        let used_colors = json.steps.iter().flat_map(|step| {
+            step.color
+                .into_iter()
+                .chain(step.highlights.iter().map(|highlight| highlight.color))
+        });
+        for color in used_colors {
+            if !legend_colors.contains(&color) && reported_colors.insert(color) {
+                errors.push(StepError {
+                    step: None,
+                    kind: StepErrorKind::ColorWithoutLegend { color },
                 });
             }
         }
@@ -359,21 +529,37 @@ impl Walkthrough {
                     }
                 };
                 let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
-                match resolve_step_range(step_json, &snapshot) {
-                    Ok(range) => steps.push(WalkthroughStep {
-                        id: StepId::new(step_json.id.clone()),
-                        path: project_path,
-                        buffer,
-                        range,
-                        title: step_json.title.clone().into(),
-                        comment: step_json.comment.clone().into(),
-                        node_id: step_json.node.clone().map(SharedString::from),
-                    }),
-                    Err(kind) => errors.push(StepError {
-                        step: Some(step_json.id.clone()),
-                        kind,
-                    }),
-                }
+                let rows = match resolve_step_rows(step_json, &snapshot) {
+                    Ok(rows) => rows,
+                    Err(kind) => {
+                        errors.push(StepError {
+                            step: Some(step_json.id.clone()),
+                            kind,
+                        });
+                        continue;
+                    }
+                };
+                let (highlights, highlight_errors) =
+                    resolve_step_highlights(step_json, rows.start, &snapshot);
+                errors.extend(highlight_errors.into_iter().map(|kind| StepError {
+                    step: Some(step_json.id.clone()),
+                    kind,
+                }));
+                // Biased inwards so that typing at either edge of the range does not
+                // grow the highlight, and deleting the code collapses it to empty.
+                let start = snapshot.anchor_after(Point::new(rows.start, 0));
+                let end = snapshot.anchor_before(Point::new(rows.end, snapshot.line_len(rows.end)));
+                steps.push(WalkthroughStep {
+                    id: StepId::new(step_json.id.clone()),
+                    path: project_path,
+                    buffer,
+                    range: start..end,
+                    title: step_json.title.clone().into(),
+                    comment: step_json.comment.clone().into(),
+                    node_id: step_json.node.clone().map(SharedString::from),
+                    color: step_json.color,
+                    highlights,
+                });
             }
 
             let flowchart = match json.flowchart {
@@ -428,6 +614,14 @@ impl Walkthrough {
                     summary: json.summary.into(),
                     steps,
                     flowchart,
+                    legend: json
+                        .legend
+                        .into_iter()
+                        .map(|entry| LegendEntry {
+                            color: entry.color,
+                            label: entry.label.into(),
+                        })
+                        .collect(),
                 })
             } else {
                 Err(errors)
@@ -436,10 +630,11 @@ impl Walkthrough {
     }
 }
 
-fn resolve_step_range(
+/// Resolves the first and last row of a step, both inclusive.
+fn resolve_step_rows(
     step: &WalkthroughStepJson,
     snapshot: &BufferSnapshot,
-) -> Result<Range<language::Anchor>, StepErrorKind> {
+) -> Result<Range<u32>, StepErrorKind> {
     let line_count = snapshot.max_point().row + 1;
     if step.start_line < 1 || step.start_line > step.end_line || step.end_line > line_count {
         return Err(StepErrorKind::InvalidRange {
@@ -491,11 +686,63 @@ fn resolve_step_range(
         }
     }
 
-    // Biased inwards so that typing at either edge of the range does not
-    // grow the highlight, and deleting the code collapses it to empty.
-    let start = snapshot.anchor_after(Point::new(start_row, 0));
-    let end = snapshot.anchor_before(Point::new(end_row, snapshot.line_len(end_row)));
-    Ok(start..end)
+    Ok(start_row..end_row)
+}
+
+/// Resolves a step's inner highlights. `step_start_row` is the row the step
+/// resolved to, which differs from `start_line` when `anchor_text` moved the
+/// step; the highlights move with it.
+fn resolve_step_highlights(
+    step: &WalkthroughStepJson,
+    step_start_row: u32,
+    snapshot: &BufferSnapshot,
+) -> (Vec<StepHighlight>, Vec<StepErrorKind>) {
+    let mut highlights = Vec::new();
+    let mut errors = Vec::new();
+    if step.highlights.len() > MAX_STEP_HIGHLIGHTS {
+        errors.push(StepErrorKind::TooManyHighlights {
+            count: step.highlights.len(),
+        });
+        return (highlights, errors);
+    }
+
+    for highlight in &step.highlights {
+        if highlight.start_line < step.start_line
+            || highlight.end_line > step.end_line
+            || highlight.start_line > highlight.end_line
+        {
+            errors.push(StepErrorKind::HighlightOutsideStep {
+                start_line: highlight.start_line,
+                end_line: highlight.end_line,
+            });
+            continue;
+        }
+        let start_row = step_start_row + (highlight.start_line - step.start_line);
+        let end_row = step_start_row + (highlight.end_line - step.start_line);
+        let lines = Point::new(start_row, 0)..Point::new(end_row, snapshot.line_len(end_row));
+
+        let offsets = match highlight.text.as_deref().filter(|text| !text.is_empty()) {
+            Some(text) => {
+                let lines_start = lines.start.to_offset(snapshot);
+                let haystack = snapshot.text_for_range(lines).collect::<String>();
+                let Some(found) = haystack.find(text) else {
+                    errors.push(StepErrorKind::HighlightTextNotFound {
+                        text: text.to_string(),
+                        start_line: highlight.start_line,
+                        end_line: highlight.end_line,
+                    });
+                    continue;
+                };
+                lines_start + found..lines_start + found + text.len()
+            }
+            None => lines.start.to_offset(snapshot)..lines.end.to_offset(snapshot),
+        };
+        highlights.push(StepHighlight {
+            range: snapshot.anchor_after(offsets.start)..snapshot.anchor_before(offsets.end),
+            color: highlight.color,
+        });
+    }
+    (highlights, errors)
 }
 
 const FLOWCHART_STATEMENT_KEYWORDS: &[&str] = &[
@@ -867,6 +1114,8 @@ mod tests {
             title: format!("Title of {id}"),
             comment: format!("Comment of {id}"),
             node: None,
+            color: None,
+            highlights: Vec::new(),
         }
     }
 
@@ -876,7 +1125,32 @@ mod tests {
             summary: "Summary".to_string(),
             steps,
             flowchart: None,
+            legend: Vec::new(),
         }
+    }
+
+    fn highlight(
+        start_line: u32,
+        end_line: u32,
+        text: Option<&str>,
+        color: HighlightColor,
+    ) -> StepHighlightJson {
+        StepHighlightJson {
+            start_line,
+            end_line,
+            text: text.map(str::to_string),
+            color,
+        }
+    }
+
+    fn legend(colors: &[HighlightColor]) -> Vec<LegendEntryJson> {
+        colors
+            .iter()
+            .map(|color| LegendEntryJson {
+                color: *color,
+                label: format!("Meaning of {color}"),
+            })
+            .collect()
     }
 
     async fn load(
@@ -1210,6 +1484,117 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_colors_and_highlights_resolve(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+
+        let mut plain = step("plain", "root/src/two.rs", 3, 5);
+        plain.color = Some(HighlightColor::Blue);
+        plain.highlights = vec![
+            highlight(4, 4, None, HighlightColor::Red),
+            highlight(3, 5, Some("body()"), HighlightColor::Green),
+        ];
+        let mut shifted = step("shifted", "root/src/one.rs", 40, 42);
+        shifted.anchor_text = Some("line 37".to_string());
+        shifted.highlights = vec![highlight(41, 42, Some("38"), HighlightColor::Red)];
+
+        let mut json = walkthrough_json(vec![plain, shifted]);
+        json.legend = legend(&[
+            HighlightColor::Blue,
+            HighlightColor::Red,
+            HighlightColor::Green,
+        ]);
+        let walkthrough = load(json, &project, cx)
+            .await
+            .expect("walkthrough should be valid");
+
+        assert_eq!(
+            walkthrough
+                .legend_label(HighlightColor::Red)
+                .map(|label| label.as_ref()),
+            Some("Meaning of red")
+        );
+        assert_eq!(walkthrough.legend_label(HighlightColor::Purple), None);
+        assert_eq!(
+            walkthrough.steps[0].colors(),
+            [
+                HighlightColor::Blue,
+                HighlightColor::Red,
+                HighlightColor::Green
+            ]
+        );
+        assert_eq!(walkthrough.steps[1].colors(), [HighlightColor::Red]);
+
+        cx.update(|cx| {
+            let highlights = |step: &WalkthroughStep| {
+                let snapshot = step.buffer.read(cx);
+                step.highlights
+                    .iter()
+                    .map(|highlight| {
+                        (
+                            highlight.range.start.to_point(snapshot)
+                                ..highlight.range.end.to_point(snapshot),
+                            highlight.color,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                highlights(&walkthrough.steps[0]),
+                [
+                    (Point::new(3, 0)..Point::new(3, 11), HighlightColor::Red),
+                    (Point::new(3, 4)..Point::new(3, 10), HighlightColor::Green),
+                ]
+            );
+            assert_eq!(
+                highlights(&walkthrough.steps[1]),
+                [(Point::new(37, 5)..Point::new(37, 7), HighlightColor::Red)]
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_color_validation_errors(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+
+        let mut colored = step("colored", "root/src/one.rs", 10, 12);
+        colored.color = Some(HighlightColor::Purple);
+        colored.highlights = vec![
+            highlight(9, 10, None, HighlightColor::Blue),
+            highlight(11, 13, None, HighlightColor::Blue),
+            highlight(12, 11, None, HighlightColor::Blue),
+            highlight(10, 11, Some("line 12"), HighlightColor::Orange),
+        ];
+        let mut crowded = step("crowded", "root/src/one.rs", 20, 22);
+        crowded.highlights = (0..9)
+            .map(|_| highlight(20, 20, None, HighlightColor::Blue))
+            .collect();
+
+        let mut json = walkthrough_json(vec![colored, crowded]);
+        json.legend = legend(&[HighlightColor::Blue, HighlightColor::Blue]);
+        let errors = load(json, &project, cx)
+            .await
+            .err()
+            .expect("walkthrough should be invalid");
+        let rendered = errors
+            .iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            [
+                "the legend lists `blue` more than once",
+                "the color `purple` is used but has no entry in `legend`",
+                "the color `orange` is used but has no entry in `legend`",
+                "Step `colored`: highlight lines 9-10 are not a valid range within the step's lines",
+                "Step `colored`: highlight lines 11-13 are not a valid range within the step's lines",
+                "Step `colored`: highlight lines 12-11 are not a valid range within the step's lines",
+                "Step `colored`: highlight text `line 12` was not found in lines 10-11",
+                "Step `crowded`: a step can have at most 8 highlights, but 9 were given",
+            ]
+        );
+    }
+
+    #[gpui::test]
     async fn test_anchors_follow_edits_and_become_stale(cx: &mut TestAppContext) {
         let project = test_project(cx).await;
         let walkthrough = load(
@@ -1302,7 +1687,12 @@ mod tests {
                 "anchor_text": "fn authenticate(",
                 "title": "Parse the bearer token",
                 "comment": "Markdown explanation.",
-                "node": "parse"
+                "node": "parse",
+                "color": "blue",
+                "highlights": [
+                    { "start_line": 44, "end_line": 44, "text": "token", "color": "red" },
+                    { "start_line": 50, "end_line": 52, "color": "blue" }
+                ]
             }, {
                 "id": "minimal",
                 "path": "src/auth/middleware.rs",
@@ -1311,11 +1701,21 @@ mod tests {
                 "title": "Minimal",
                 "comment": "No optional fields."
             }],
-            "flowchart": "flowchart TD\n  parse[Parse token] --> verify{Valid?}"
+            "flowchart": "flowchart TD\n  parse[Parse token] --> verify{Valid?}",
+            "legend": [
+                { "color": "blue", "label": "Input" },
+                { "color": "red", "label": "Rejected" }
+            ]
         }))
         .expect("spec example should deserialize");
         assert_eq!(json.steps[0].node.as_deref(), Some("parse"));
+        assert_eq!(json.steps[0].color, Some(HighlightColor::Blue));
+        assert_eq!(json.steps[0].highlights.len(), 2);
+        assert_eq!(json.steps[0].highlights[1].text, None);
         assert_eq!(json.steps[1].anchor_text, None);
+        assert_eq!(json.steps[1].color, None);
+        assert!(json.steps[1].highlights.is_empty());
+        assert_eq!(json.legend[1].color, HighlightColor::Red);
 
         let fixture: WalkthroughJson =
             serde_json::from_str(include_str!("../test_fixtures/sample.json"))

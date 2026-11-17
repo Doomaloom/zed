@@ -82,6 +82,8 @@ pub(crate) mod test_support {
             title: format!("Step {id}"),
             comment: format!("Comment for **{id}**."),
             node: node.map(str::to_string),
+            color: None,
+            highlights: Vec::new(),
         }
     }
 
@@ -99,6 +101,7 @@ pub(crate) mod test_support {
             ],
             flowchart: with_flowchart
                 .then(|| "flowchart TD\n  parse[Parse token] --> verify{Valid?}".to_string()),
+            legend: Vec::new(),
         }
     }
 

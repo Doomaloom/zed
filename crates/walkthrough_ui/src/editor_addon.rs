@@ -13,11 +13,83 @@ use gpui::{
 };
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use ui::{IconButton, IconButtonShape, Tooltip, prelude::*};
-use walkthrough::{GoToStep, StepId, WalkthroughEvent, WalkthroughStep, WalkthroughStore};
+use walkthrough::{
+    GoToStep, HighlightColor, StepId, WalkthroughEvent, WalkthroughStep, WalkthroughStore,
+};
 
 const MAX_COMMENT_ROWS: f32 = 14.;
 const MAX_BLOCK_WIDTH_IN_EMS: f32 = 110.;
 const STALE_MESSAGE: &str = "This code has changed since the walkthrough was written";
+
+pub(crate) fn highlight_hsla(color: HighlightColor, theme: &theme::Theme) -> Hsla {
+    // Taken from the built-in accent scales rather than the theme's own
+    // accents, which a theme may reorder or replace, so that a color named in
+    // the legend is always that hue.
+    let accents = match theme.appearance() {
+        theme::Appearance::Light => theme::AccentColors::light(),
+        theme::Appearance::Dark => theme::AccentColors::dark(),
+    };
+    let index = match color {
+        HighlightColor::Blue => 0,
+        HighlightColor::Orange => 1,
+        HighlightColor::Purple => 4,
+        HighlightColor::Yellow => 5,
+        HighlightColor::Green => 6,
+        HighlightColor::Red => 7,
+    };
+    accents.color_for_index(index)
+}
+
+pub(crate) fn legend_chip(
+    color: HighlightColor,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .gap_1()
+        .child(
+            div()
+                .size_2()
+                .rounded_full()
+                .bg(highlight_hsla(color, cx.theme())),
+        )
+        .child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
+}
+
+#[derive(Clone, Copy)]
+enum RangeStyle {
+    Step {
+        color: Option<HighlightColor>,
+        is_active: bool,
+    },
+    Highlight {
+        color: HighlightColor,
+        in_active_step: bool,
+    },
+}
+
+impl RangeStyle {
+    fn background(self, theme: &theme::Theme) -> Hsla {
+        match self {
+            Self::Step {
+                color: None,
+                is_active: false,
+            } => theme.colors().editor_document_highlight_read_background,
+            Self::Step {
+                color: None,
+                is_active: true,
+            } => theme.colors().text_accent.opacity(0.18),
+            Self::Step {
+                color: Some(color),
+                is_active,
+            } => highlight_hsla(color, theme).opacity(if is_active { 0.18 } else { 0.08 }),
+            Self::Highlight {
+                color,
+                in_active_step,
+            } => highlight_hsla(color, theme).opacity(if in_active_step { 0.35 } else { 0.15 }),
+        }
+    }
+}
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|editor: &mut Editor, _window, cx| register_editor(editor, cx))
@@ -192,36 +264,47 @@ fn refresh_highlights(editor: &mut Editor, cx: &mut Context<Editor>) {
         .active_step()
         .map(|step| step.id.clone());
 
+    let snapshot = editor.buffer().read(cx).snapshot(cx);
     let mut active_ranges = Vec::new();
     let mut inactive_ranges = Vec::new();
+    let mut inner_ranges = Vec::new();
     for block in &addon.blocks {
         let step = &block.renderer.step;
         if step.is_stale(cx) {
             continue;
         }
-        if active_step.as_ref() == Some(&step.id) {
-            active_ranges.push(block.range.clone());
+        let is_active = active_step.as_ref() == Some(&step.id);
+        let style = RangeStyle::Step {
+            color: step.color,
+            is_active,
+        };
+        if is_active {
+            active_ranges.push((block.range.clone(), style));
         } else {
-            inactive_ranges.push(block.range.clone());
+            inactive_ranges.push((block.range.clone(), style));
+        }
+        for highlight in &step.highlights {
+            let Some(range) = snapshot.anchor_range_in_buffer(highlight.range.clone()) else {
+                continue;
+            };
+            inner_ranges.push((
+                range,
+                RangeStyle::Highlight {
+                    color: highlight.color,
+                    in_active_step: is_active,
+                },
+            ));
         }
     }
-    let snapshot = editor.buffer().read(cx).snapshot(cx);
-    inactive_ranges.sort_by(|a, b| a.start.cmp(&b.start, &snapshot));
 
-    set_highlights(
-        editor,
-        HighlightKey::WalkthroughStep,
-        inactive_ranges,
-        |theme| theme.colors().editor_document_highlight_read_background,
-        cx,
-    );
+    set_highlights(editor, HighlightKey::WalkthroughStep, inactive_ranges, cx);
     set_highlights(
         editor,
         HighlightKey::WalkthroughActiveStep,
         active_ranges,
-        |theme| theme.colors().text_accent.opacity(0.18),
         cx,
     );
+    set_highlights(editor, HighlightKey::WalkthroughHighlight, inner_ranges, cx);
     // Blocks restyle themselves from the store when they are next drawn.
     cx.notify();
 }
@@ -229,15 +312,29 @@ fn refresh_highlights(editor: &mut Editor, cx: &mut Context<Editor>) {
 fn set_highlights(
     editor: &mut Editor,
     key: HighlightKey,
-    ranges: Vec<Range<Anchor>>,
-    color: fn(&theme::Theme) -> Hsla,
+    mut ranges: Vec<(Range<Anchor>, RangeStyle)>,
     cx: &mut Context<Editor>,
 ) {
     if ranges.is_empty() {
         editor.clear_background_highlights(key, cx);
-    } else {
-        editor.highlight_background(key, &ranges, move |_, theme| color(theme), cx);
+        return;
     }
+    let snapshot = editor.buffer().read(cx).snapshot(cx);
+    ranges.sort_by(|(a, _), (b, _)| a.start.cmp(&b.start, &snapshot));
+    let (ranges, styles): (Vec<_>, Vec<_>) = ranges.into_iter().unzip();
+    // The editor passes each range's index in `ranges`, which is how several
+    // colors share one highlight key.
+    editor.highlight_background(
+        key,
+        &ranges,
+        move |index, theme| {
+            styles
+                .get(*index)
+                .map(|style| style.background(theme))
+                .unwrap_or_else(gpui::transparent_black)
+        },
+        cx,
+    );
 }
 
 #[cfg(test)]
@@ -281,6 +378,24 @@ impl StepBlockRenderer {
         });
         let is_stale = self.step.is_stale(cx);
         let index = self.index;
+        let step_color = self
+            .step
+            .color
+            .map(|color| highlight_hsla(color, cx.theme()));
+        let legend = self
+            .store
+            .upgrade()
+            .and_then(|store| {
+                let walkthrough = store.read(cx).active()?;
+                Some(
+                    self.step
+                        .colors()
+                        .into_iter()
+                        .filter_map(|color| Some((color, walkthrough.legend_label(color)?.clone())))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
         let go_to_step = |step: StepId| {
             move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 window.dispatch_action(
@@ -383,6 +498,15 @@ impl StepBlockRenderer {
                             MarkdownStyle::themed(MarkdownFont::Editor, block_context.window, cx),
                         )),
                 )
+                .when(!legend.is_empty(), |this| {
+                    this.child(
+                        h_flex().pt_1().gap_3().flex_wrap().children(
+                            legend
+                                .iter()
+                                .map(|(color, label)| legend_chip(*color, label.clone(), cx)),
+                        ),
+                    )
+                })
         });
 
         div()
@@ -400,10 +524,11 @@ impl StepBlockRenderer {
                     .gap_1()
                     .rounded_sm()
                     .border_l_2()
-                    .border_color(if is_active {
-                        colors.text_accent
-                    } else {
-                        colors.border
+                    .border_color(match (step_color, is_active) {
+                        (Some(step_color), true) => step_color,
+                        (Some(step_color), false) => step_color.opacity(0.5),
+                        (None, true) => colors.text_accent,
+                        (None, false) => colors.border,
                     })
                     .bg(colors.editor_subheader_background)
                     .text_ui(cx)
@@ -578,6 +703,96 @@ mod tests {
         assert_eq!(annotations(&two, cx), unannotated);
         assert!(one.read_with(cx, |editor, cx| editor.is_dirty(cx)));
         assert!(!two.read_with(cx, |editor, cx| editor.is_dirty(cx)));
+    }
+
+    #[gpui::test]
+    async fn test_colored_highlights(cx: &mut TestAppContext) {
+        use walkthrough::{LegendEntryJson, StepHighlightJson};
+
+        let (test, cx) = init_test(cx).await;
+        let mut json = sample_walkthrough(false);
+        json.steps[0].color = Some(HighlightColor::Blue);
+        json.steps[0].highlights = vec![StepHighlightJson {
+            start_line: 3,
+            end_line: 3,
+            text: Some("line".to_string()),
+            color: HighlightColor::Red,
+        }];
+        json.steps[2].highlights = vec![StepHighlightJson {
+            start_line: 11,
+            end_line: 12,
+            text: None,
+            color: HighlightColor::Green,
+        }];
+        json.legend = [
+            (HighlightColor::Blue, "Input"),
+            (HighlightColor::Red, "Rejected"),
+            (HighlightColor::Green, "Accepted"),
+        ]
+        .into_iter()
+        .map(|(color, label)| LegendEntryJson {
+            color,
+            label: label.to_string(),
+        })
+        .collect();
+        load_walkthrough(json, &test, cx).await;
+        let one = active_editor(&test, cx);
+
+        let highlights = |cx: &mut VisualTestContext| {
+            one.update(cx, |editor, cx| {
+                let snapshot = editor.display_snapshot(cx);
+                let theme = cx.theme().clone();
+                editor
+                    .sorted_background_highlights_in_range(
+                        Anchor::Min..Anchor::Max,
+                        &snapshot,
+                        &theme,
+                    )
+                    .into_iter()
+                    .map(|(range, color)| {
+                        let start = range.start.to_point(&snapshot);
+                        let end = range.end.to_point(&snapshot);
+                        ((start.row, start.column)..(end.row, end.column), color)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let theme = cx.update(|_, cx| cx.theme().clone());
+        let blue = highlight_hsla(HighlightColor::Blue, &theme);
+        let red = highlight_hsla(HighlightColor::Red, &theme);
+        let green = highlight_hsla(HighlightColor::Green, &theme);
+        assert_ne!(blue, red);
+        assert_ne!(red, green);
+
+        assert_eq!(
+            highlights(cx),
+            [
+                ((1, 0)..(3, 6), blue.opacity(0.18)),
+                ((2, 0)..(2, 4), red.opacity(0.35)),
+                (
+                    (9, 0)..(11, 7),
+                    theme.colors().editor_document_highlight_read_background
+                ),
+                ((10, 0)..(11, 7), green.opacity(0.15)),
+            ]
+        );
+
+        one.update(cx, |editor, cx| {
+            let addon = editor.addon::<WalkthroughAddon>().expect("addon");
+            addon.store.update(cx, |store, cx| {
+                store.set_active_step(&StepId::new("c"), cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            highlights(cx),
+            [
+                ((1, 0)..(3, 6), blue.opacity(0.08)),
+                ((2, 0)..(2, 4), red.opacity(0.15)),
+                ((9, 0)..(11, 7), theme.colors().text_accent.opacity(0.18)),
+                ((10, 0)..(11, 7), green.opacity(0.35)),
+            ]
+        );
     }
 
     #[gpui::test]

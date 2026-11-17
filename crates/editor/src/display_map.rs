@@ -191,6 +191,7 @@ pub enum HighlightKey {
     SyntaxTreeView(usize),
     VimExchange,
     WalkthroughActiveStep,
+    WalkthroughHighlight,
     WalkthroughStep,
 }
 
