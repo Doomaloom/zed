@@ -1,6 +1,7 @@
 {
   "title": "How a code walkthrough is created and shown",
   "summary": "The agent's `create_walkthrough` call is validated, stored per project, and then drawn by three independent UI pieces that only listen to the store.",
+  "example": "An agent calls create_walkthrough with 2 steps that both resolve, and the user then presses next once.",
   "steps": [
     {
       "id": "tool-run",
@@ -11,13 +12,19 @@
       "title": "The agent calls `create_walkthrough`",
       "comment": "The tool receives the whole walkthrough in **one call** and hands it to `walkthrough::show_walkthrough`, which calls `Walkthrough::from_json`. It never edits a file: it only reads buffers and changes UI state, which is why it needs no permission prompt.",
       "node": "tool",
-      "color": "blue"
+      "color": "blue",
+      "data": [
+        {
+          "name": "input",
+          "value": "2 steps: one.rs lines 10-20, two.rs lines 5-9"
+        }
+      ]
     },
     {
       "id": "validate",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 431,
-      "end_line": 459,
+      "start_line": 506,
+      "end_line": 532,
       "anchor_text": "pub fn from_json(",
       "title": "Validation collects every problem",
       "comment": "Errors are pushed onto the error list (highlighted) instead of returning early, so the agent can fix everything in a single retry. The step count and duplicate ids are checked before any file is opened.",
@@ -25,18 +32,24 @@
       "color": "green",
       "highlights": [
         {
-          "start_line": 431,
-          "end_line": 459,
+          "start_line": 506,
+          "end_line": 532,
           "text": "let mut errors = Vec::new();",
           "color": "yellow"
+        }
+      ],
+      "data": [
+        {
+          "name": "errors",
+          "value": "[]"
         }
       ]
     },
     {
       "id": "errors",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 1092,
-      "end_line": 1105,
+      "start_line": 1326,
+      "end_line": 1339,
       "anchor_text": "let walkthrough = load.await.map_err(|errors| {",
       "title": "Errors go back to the agent together",
       "comment": "On failure nothing is shown to the user. The message returned to the agent lists each problem on its own line, phrased so the model can act on it.",
@@ -44,45 +57,73 @@
       "color": "green",
       "highlights": [
         {
-          "start_line": 1092,
-          "end_line": 1092,
+          "start_line": 1326,
+          "end_line": 1326,
           "text": "map_err(|errors|",
           "color": "yellow"
+        }
+      ],
+      "data": [
+        {
+          "name": "errors",
+          "value": "[]"
         }
       ]
     },
     {
       "id": "anchor",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 634,
-      "end_line": 653,
+      "start_line": 868,
+      "end_line": 887,
       "anchor_text": "fn resolve_step_rows(",
       "title": "Line numbers become anchors",
       "comment": "The agent's 1-based line numbers are checked against the buffer as it is *now*. Further down, `anchor_text` rescues ranges that are off by a few lines, and the result is stored as anchors so it follows later edits.",
       "node": "anchor",
-      "color": "green"
+      "color": "green",
+      "data": [
+        {
+          "name": "rows",
+          "value": "9..19"
+        }
+      ]
     },
     {
       "id": "store",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 977,
-      "end_line": 984,
+      "start_line": 1211,
+      "end_line": 1218,
       "anchor_text": "pub fn set_walkthrough(",
       "title": "The store takes ownership",
       "comment": "One store per project holds the active walkthrough. Setting it mints the id, activates the first step and emits `Created`. Every UI piece reacts to that event; none of them call each other.",
       "node": "store",
-      "color": "green"
+      "color": "green",
+      "data": [
+        {
+          "name": "active_step_index",
+          "value": "0"
+        }
+      ]
     },
     {
       "id": "editor",
       "path": "crates/walkthrough_ui/src/editor_addon.rs",
-      "start_line": 165,
-      "end_line": 178,
+      "start_line": 169,
+      "end_line": 182,
       "anchor_text": "fn refresh_annotations(",
       "title": "Editors annotate themselves",
       "comment": "Each singleton editor has an addon subscribed to the store. On `Created` or `Dismissed` it first removes the blocks it added, then inserts a comment block below every step in its buffer. Nothing is written to the buffer.",
       "node": "editor",
-      "color": "purple"
+      "color": "purple",
+      "data": [
+        {
+          "name": "active_step_index",
+          "value": "0"
+        },
+        {
+          "name": "blocks",
+          "value": "1"
+        }
+      ]
     },
     {
       "id": "reveal",
@@ -93,7 +134,13 @@
       "title": "Navigation brings the step into view",
       "comment": "A single subscriber opens the step's file in a code pane, puts the cursor at the start of the range without selecting it, and scrolls so the range comes first. Next, previous and flowchart clicks all end up here.",
       "node": "reveal",
-      "color": "purple"
+      "color": "purple",
+      "data": [
+        {
+          "name": "active_step_index",
+          "value": "1"
+        }
+      ]
     },
     {
       "id": "flowchart",

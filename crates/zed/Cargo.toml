@@ -226,6 +226,7 @@ util.workspace = true
 uuid.workspace = true
 vim.workspace = true
 vim_mode_setting.workspace = true
+walkthrough.workspace = true
 walkthrough_ui.workspace = true
 watch.workspace = true
 web_search.workspace = true

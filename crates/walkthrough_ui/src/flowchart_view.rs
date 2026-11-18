@@ -690,16 +690,11 @@ impl FlowchartView {
         let colors = cx.theme().colors();
 
         let rows = walkthrough.steps.iter().enumerate().map(|(index, step)| {
-            let file_name = step
-                .path
-                .path
-                .file_name()
-                .map(|name| name.to_string())
-                .unwrap_or_default();
+            let file_label = &step.file_label;
             let location = if step.is_stale(cx) {
-                format!("{file_name} (code changed)")
+                format!("{file_label} (code changed)")
             } else {
-                format!("{file_name}:{}", step.point_range(cx).start.row + 1)
+                format!("{file_label}:{}", step.point_range(cx).start.row + 1)
             };
             let step_id = step.id.clone();
             h_flex()
@@ -754,9 +749,18 @@ impl FlowchartView {
                     .map(|entry| legend_chip(entry.color, entry.label.clone(), cx)),
             )
         });
+        let example = walkthrough.example.clone().map(|example| {
+            div()
+                .id("walkthrough-example")
+                .debug_selector(|| "walkthrough-example".to_string())
+                .px_2()
+                .pb_1()
+                .child(Label::new(example).size(LabelSize::Small))
+        });
         Some(
             v_flex()
                 .gap_0p5()
+                .children(example)
                 .children(legend)
                 .children(rows)
                 .into_any_element(),
@@ -883,6 +887,28 @@ mod tests {
             Some(DiagramState::Failed(error)) => panic!("diagram failed to render: {error}"),
             None => panic!("there is no diagram"),
         })
+    }
+
+    #[gpui::test]
+    async fn test_example_scenario_is_shown_above_the_steps(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        cx.dispatch_action(ToggleFlowchart);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("walkthrough-step-row-0").is_some());
+        assert!(cx.debug_bounds("walkthrough-example").is_none());
+
+        let mut json = sample_walkthrough(false);
+        json.example = Some("A user adds 2 units to an empty cart".to_string());
+        load_walkthrough(json, &test, cx).await;
+        cx.run_until_parked();
+        let example = cx
+            .debug_bounds("walkthrough-example")
+            .expect("the scenario should be drawn");
+        let first_row = cx
+            .debug_bounds("walkthrough-step-row-0")
+            .expect("step rows should be drawn");
+        assert!(example.bottom() <= first_row.top());
     }
 
     #[gpui::test]

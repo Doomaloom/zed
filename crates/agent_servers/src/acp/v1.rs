@@ -47,8 +47,10 @@ use acp_thread::{AcpThread, LoadError, TerminalProviderEvent};
 use terminal::TerminalBuilder;
 use terminal::terminal_settings::{AlternateScroll, CursorShape};
 
-use crate::zed_mcp_server::{ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project};
 use crate::{CURSOR_ID, GEMINI_ID};
+use walkthrough::mcp_server::{
+    ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project,
+};
 
 pub const GEMINI_TERMINAL_AUTH_METHOD_ID: &str = "spawn-gemini-cli";
 const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";

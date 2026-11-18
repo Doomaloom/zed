@@ -385,7 +385,6 @@ dependencies = [
  "chrono",
  "client",
  "collections",
- "context_server",
  "env_logger 0.11.8",
  "feature_flags",
  "fs",
@@ -11223,6 +11222,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "net",
+ "tempfile",
 ]
 
 [[package]]
@@ -19826,16 +19826,25 @@ dependencies = [
 name = "walkthrough"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "collections",
+ "context_server",
+ "feature_flags",
  "fs",
+ "futures 0.3.34",
  "gpui",
  "indoc",
  "language",
+ "log",
+ "nc",
+ "net",
+ "paths",
  "project",
  "schemars 1.0.4",
  "serde",
  "serde_json",
  "settings",
+ "tempfile",
  "util",
 ]
 
@@ -19858,6 +19867,7 @@ dependencies = [
  "quick-xml 0.41.0",
  "serde_json",
  "settings",
+ "tempfile",
  "theme",
  "theme_settings",
  "ui",
@@ -22715,6 +22725,7 @@ dependencies = [
  "uuid",
  "vim",
  "vim_mode_setting",
+ "walkthrough",
  "walkthrough_ui",
  "watch",
  "web_search",

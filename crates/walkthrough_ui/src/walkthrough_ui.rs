@@ -2,7 +2,10 @@ mod editor_addon;
 mod flowchart_view;
 mod navigation;
 
+use feature_flags::{FeatureFlagViewExt as _, WalkthroughFeatureFlag};
 use gpui::App;
+use walkthrough::mcp_server::zed_mcp_server_for_project;
+use workspace::Workspace;
 
 pub use flowchart_view::{FlowchartView, parse_check};
 
@@ -10,6 +13,28 @@ pub fn init(cx: &mut App) {
     editor_addon::init(cx);
     navigation::init(cx);
     flowchart_view::init(cx);
+    cx.observe_new(|workspace: &mut Workspace, window, cx| {
+        let Some(window) = window else {
+            return;
+        };
+        // Standalone MCP clients can only find the server if it is already
+        // running, so it is not left to the first agent session. The flag may
+        // resolve after the workspace opens.
+        let start_server = |workspace: &mut Workspace, cx: &mut gpui::Context<Workspace>| {
+            let project = workspace.project().clone();
+            cx.defer(move |cx| {
+                zed_mcp_server_for_project(&project, cx);
+            });
+        };
+        start_server(workspace, cx);
+        cx.observe_flag::<WalkthroughFeatureFlag, _>(window, move |enabled, workspace, _, cx| {
+            if *enabled {
+                start_server(workspace, cx);
+            }
+        })
+        .detach();
+    })
+    .detach();
 }
 
 #[cfg(test)]
@@ -24,6 +49,10 @@ pub(crate) mod test_support {
     use util::{path, rel_path::rel_path};
     use walkthrough::{WalkthroughJson, WalkthroughStepJson, WalkthroughStore};
     use workspace::{AppState, MultiWorkspace, Workspace};
+
+    pub struct RegistryDirectoryGuard(pub tempfile::TempDir);
+
+    impl gpui::Global for RegistryDirectoryGuard {}
 
     pub struct TestWorkspace {
         pub project: Entity<Project>,
@@ -42,6 +71,13 @@ pub(crate) mod test_support {
             let app_state = AppState::test(cx);
             command_palette_hooks::init(cx);
             editor::init(cx);
+            let registry_directory =
+                tempfile::tempdir().expect("creating an MCP registry directory");
+            walkthrough::mcp_server::set_registry_directory(
+                registry_directory.path().to_path_buf(),
+                cx,
+            );
+            cx.set_global(RegistryDirectoryGuard(registry_directory));
             crate::init(cx);
             app_state
         });
@@ -55,6 +91,11 @@ pub(crate) mod test_support {
                     "three.rs": numbered_lines(10),
                 }
             }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/other"),
+            json!({ "api": { "handler.rs": numbered_lines(20) } }),
         )
         .await;
         let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
@@ -84,6 +125,7 @@ pub(crate) mod test_support {
             node: node.map(str::to_string),
             color: None,
             highlights: Vec::new(),
+            data: Vec::new(),
         }
     }
 
@@ -102,6 +144,7 @@ pub(crate) mod test_support {
             flowchart: with_flowchart
                 .then(|| "flowchart TD\n  parse[Parse token] --> verify{Valid?}".to_string()),
             legend: Vec::new(),
+            example: None,
         }
     }
 
@@ -355,5 +398,24 @@ mod tests {
             let source = flowchart.current_source().expect("source");
             assert!(source.contains("\n  style validate fill:#"), "{source}");
         });
+    }
+
+    #[gpui::test]
+    async fn test_workspace_registers_an_mcp_server_when_opened(cx: &mut TestAppContext) {
+        let (_workspace, cx) = crate::test_support::init_test(cx).await;
+        cx.run_until_parked();
+
+        let registry_directory = cx.read(|cx| {
+            cx.global::<crate::test_support::RegistryDirectoryGuard>()
+                .0
+                .path()
+                .to_path_buf()
+        });
+        let registered = std::fs::read_dir(&registry_directory)
+            .expect("reading the registry directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(registered, 1);
     }
 }

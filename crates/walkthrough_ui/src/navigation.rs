@@ -298,6 +298,7 @@ mod tests {
     use crate::test_support::*;
     use gpui::{Focusable as _, TestAppContext, VisualTestContext};
     use language::Point;
+    use util::path;
     use workspace::item::ItemHandle as _;
 
     fn walkthrough_actions_hidden(cx: &mut VisualTestContext) -> bool {
@@ -318,6 +319,53 @@ mod tests {
             );
             hidden[0]
         })
+    }
+
+    #[gpui::test]
+    async fn test_navigation_to_a_file_outside_the_project(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        let mut json = sample_walkthrough(false);
+        json.steps[1].path = path!("/other/api/handler.rs").to_string();
+        json.steps[1].start_line = 3;
+        json.steps[1].end_line = 5;
+        let visible_roots = |cx: &mut VisualTestContext| {
+            test.project
+                .read_with(cx, |project, cx| project.visible_worktrees(cx).count())
+        };
+        let roots_before = visible_roots(cx);
+        load_walkthrough(json, &test, cx).await;
+        let one = active_editor(&test, cx);
+
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        let handler = active_editor(&test, cx);
+        assert_ne!(handler, one);
+        let opened_path = handler.read_with(cx, |_, cx| {
+            let project_path = handler.project_path(cx)?;
+            test.project.read(cx).absolute_path(&project_path, cx)
+        });
+        assert_eq!(
+            opened_path.as_deref(),
+            Some(Path::new(path!("/other/api/handler.rs")))
+        );
+        assert_eq!(cursor(&handler, cx), Point::new(2, 0));
+        assert_eq!(visible_roots(cx), roots_before);
+        let (workspace_panes, handler_pane) = test.workspace.read_with(cx, |workspace, _| {
+            (workspace.panes().to_vec(), workspace.pane_for(&handler))
+        });
+        assert!(handler_pane.is_some_and(|pane| workspace_panes.contains(&pane)));
+        assert_eq!(
+            handler.read_with(cx, |editor, _| crate::editor_addon::step_block_count(
+                editor
+            )),
+            1
+        );
+
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("c"));
+        assert_eq!(active_editor(&test, cx), one);
     }
 
     #[gpui::test]

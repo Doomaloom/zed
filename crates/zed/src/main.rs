@@ -239,6 +239,17 @@ fn main() {
         }
     }
 
+    // `zed --mcp` Makes zed an MCP server on stdio for clients that Zed did not start
+    if args.mcp {
+        match walkthrough::mcp_server::run_stdio_server() {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                process::exit(1);
+            }
+        }
+    }
+
     // `zed --crash-handler` Makes zed operate in minidump crash handler mode
     if let Some(socket) = &args.crash_handler {
         crashes::crash_server(socket.as_path(), paths::logs_dir().clone());
@@ -2257,6 +2268,11 @@ struct Args {
     /// the MCP server that Zed runs in-process.
     #[arg(long, hide = true)]
     nc: Option<String>,
+
+    /// Runs an MCP server on stdin/stdout that forwards tool calls to a running Zed, for
+    /// MCP clients that were not started by Zed.
+    #[arg(long, hide = true)]
+    mcp: bool,
 
     #[arg(long, hide = true)]
     dump_all_actions: bool,

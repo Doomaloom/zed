@@ -15,3 +15,6 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 net.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

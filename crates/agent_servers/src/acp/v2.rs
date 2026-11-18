@@ -37,7 +37,9 @@ use task::SpawnInTerminal;
 use util::ResultExt as _;
 use util::path_list::PathList;
 
-use crate::zed_mcp_server::{ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project};
+use walkthrough::mcp_server::{
+    ZED_MCP_SERVER_NAME, ZedMcpServerCommand, zed_mcp_server_for_project,
+};
 
 fn is_connection_closed(connection: &V2ConnectionTo<Agent>) -> bool {
     connection.is_incoming_closed() || connection.termination().is_some()

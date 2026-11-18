@@ -1,4 +1,6 @@
-use std::{ops::Range, sync::Arc};
+pub mod mcp_server;
+
+use std::{ops::Range, path::Path, sync::Arc};
 
 use collections::{HashMap, HashSet};
 use gpui::{
@@ -15,6 +17,8 @@ pub const MAX_STEPS: usize = 30;
 pub const MAX_STEP_LINES: u32 = 60;
 pub const ANCHOR_TEXT_SEARCH_RADIUS: u32 = 20;
 pub const MAX_STEP_HIGHLIGHTS: usize = 8;
+pub const MAX_STEP_DATA: usize = 8;
+pub const MAX_DATA_VALUE_LENGTH: usize = 400;
 
 actions!(
     walkthrough,
@@ -69,6 +73,7 @@ pub struct Walkthrough {
     pub steps: Vec<WalkthroughStep>,
     pub flowchart: Option<Flowchart>,
     pub legend: Vec<LegendEntry>,
+    pub example: Option<SharedString>,
 }
 
 impl Walkthrough {
@@ -105,6 +110,26 @@ pub struct WalkthroughStep {
     pub node_id: Option<SharedString>,
     pub color: Option<HighlightColor>,
     pub highlights: Vec<StepHighlight>,
+    pub data: Vec<StepData>,
+    /// How to show the step's file: its name for files in the project, the
+    /// absolute path for files outside it, whose worktree has no useful name.
+    pub file_label: SharedString,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepData {
+    pub name: SharedString,
+    pub value: SharedString,
+    pub change: DataChange,
+}
+
+/// How a piece of example data compares with the most recent earlier step
+/// that listed the same name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataChange {
+    New,
+    Changed { previous: SharedString },
+    Unchanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +209,7 @@ pub enum WalkthroughEvent {
 /// - Color is optional. Use it only when it carries meaning, such as input versus mutation versus error path, or one color per subsystem. Keep one meaning per color across the whole walkthrough and use at most 4 colors.
 /// - Every color you use must have an entry in `legend` with a label of 1 to 4 words. The legend is shown to the user.
 /// - Use a step's `highlights` to mark the exact expression or lines a comment talks about, and refer to them in the comment by their legend label.
+/// - When the code transforms data, set `example` to one or two sentences naming a single concrete scenario, and give each step `data` holding the few values in play at that step. Keep values short, list only values relevant to the step, and reuse the same `name` across steps so the user sees how a value changes.
 /// - After the walkthrough is shown, reply with one or two sentences. Do not repeat the explanation in chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WalkthroughJson {
@@ -200,6 +226,11 @@ pub struct WalkthroughJson {
     /// used by a step or a highlight.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legend: Vec<LegendEntryJson>,
+    /// One or two sentences naming the example scenario that the steps' `data`
+    /// belongs to, such as "A signed-in user adds 2 units of SKU A-12 to an
+    /// empty cart".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<String>,
 }
 
 /// A highlight color. The meaning of each color is given by the walkthrough's `legend`.
@@ -254,11 +285,23 @@ pub struct StepHighlightJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StepDataJson {
+    /// The name of the value, such as a variable or field. Reuse the same name
+    /// in later steps to show how the value changes. Unique within the step.
+    pub name: String,
+    /// The value in this example scenario, as short text or a JSON literal.
+    /// At most 400 characters.
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WalkthroughStepJson {
     /// A short slug identifying this step, unique within the walkthrough.
     pub id: String,
     /// The path of the file to annotate, relative to the project root or
-    /// starting with the project's root directory name.
+    /// starting with the project's root directory name. It may instead be an
+    /// absolute path to a file in another project on the same machine, so that
+    /// one walkthrough can span, for example, a frontend and a backend.
     pub path: String,
     /// The first line of the annotated range (1-based, inclusive).
     pub start_line: u32,
@@ -282,6 +325,10 @@ pub struct WalkthroughStepJson {
     /// Smaller colored highlights inside this step's range. At most 8.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<StepHighlightJson>,
+    /// The values in play at this step in the walkthrough's `example`
+    /// scenario. At most 8.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<StepDataJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +388,17 @@ pub enum StepErrorKind {
     },
     ColorWithoutLegend {
         color: HighlightColor,
+    },
+    TooManyData {
+        count: usize,
+    },
+    EmptyDataName,
+    DuplicateDataName {
+        name: String,
+    },
+    DataValueTooLong {
+        name: String,
+        length: usize,
     },
 }
 
@@ -417,6 +475,23 @@ impl std::fmt::Display for StepError {
                 formatter,
                 "the color `{color}` is used but has no entry in `legend`"
             ),
+            StepErrorKind::TooManyData { count } => write!(
+                formatter,
+                "a step can have at most {MAX_STEP_DATA} data entries, but {count} were given"
+            ),
+            StepErrorKind::EmptyDataName => {
+                write!(formatter, "a data entry has an empty `name`")
+            }
+            StepErrorKind::DuplicateDataName { name } => {
+                write!(
+                    formatter,
+                    "the data name `{name}` is used more than once in this step"
+                )
+            }
+            StepErrorKind::DataValueTooLong { name, length } => write!(
+                formatter,
+                "the value of data `{name}` is {length} characters, but at most {MAX_DATA_VALUE_LENGTH} are allowed"
+            ),
         }
     }
 }
@@ -480,6 +555,17 @@ impl Walkthrough {
             }
         }
 
+        for step in &json.steps {
+            errors.extend(
+                validate_step_data(&step.data)
+                    .into_iter()
+                    .map(|kind| StepError {
+                        step: Some(step.id.clone()),
+                        kind,
+                    }),
+            );
+        }
+
         let open_buffers = json
             .steps
             .iter()
@@ -494,39 +580,64 @@ impl Walkthrough {
                                 .entry_for_path(project_path, cx)
                                 .is_some_and(|entry| entry.is_file())
                         });
-                project_path.map(|project_path| {
+                if let Some(project_path) = project_path {
                     let open_buffer = project.update(cx, |project, cx| {
                         project.open_buffer(project_path.clone(), cx)
                     });
-                    (project_path, open_buffer)
-                })
+                    return StepFile::InProject(project_path, open_buffer);
+                }
+                let is_absolute = project
+                    .read(cx)
+                    .path_style(cx)
+                    .has_root(Path::new(&step.path));
+                if is_absolute {
+                    StepFile::OutsideProject(open_outside_project_file(
+                        step.path.clone(),
+                        project.clone(),
+                        cx,
+                    ))
+                } else {
+                    StepFile::Missing
+                }
             })
             .collect::<Vec<_>>();
 
         cx.spawn(async move |cx| {
             let mut steps = Vec::new();
-            for (step_json, open_buffer) in json.steps.iter().zip(open_buffers) {
-                let Some((project_path, open_buffer)) = open_buffer else {
-                    errors.push(StepError {
-                        step: Some(step_json.id.clone()),
-                        kind: StepErrorKind::PathNotFound {
-                            path: step_json.path.clone(),
-                        },
-                    });
-                    continue;
-                };
-                let buffer = match open_buffer.await {
-                    Ok(buffer) => buffer,
-                    Err(error) => {
-                        errors.push(StepError {
-                            step: Some(step_json.id.clone()),
-                            kind: StepErrorKind::OpenFailed {
-                                path: step_json.path.clone(),
-                                message: error.to_string(),
-                            },
-                        });
+            let mut latest_values = HashMap::default();
+            for (step_json, step_file) in json.steps.iter().zip(open_buffers) {
+                let (project_path, buffer, file_label) = match step_file {
+                    StepFile::Missing => {
+                        errors.push(path_not_found(step_json));
                         continue;
                     }
+                    StepFile::InProject(project_path, open_buffer) => {
+                        let file_label = project_path
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string())
+                            .unwrap_or_default();
+                        match open_buffer.await {
+                            Ok(buffer) => (project_path, buffer, file_label),
+                            Err(error) => {
+                                errors.push(open_failed(step_json, &error));
+                                continue;
+                            }
+                        }
+                    }
+                    StepFile::OutsideProject(open_file) => match open_file.await {
+                        Ok(Some((project_path, buffer))) => {
+                            (project_path, buffer, step_json.path.clone())
+                        }
+                        Ok(None) => {
+                            errors.push(path_not_found(step_json));
+                            continue;
+                        }
+                        Err(error) => {
+                            errors.push(open_failed(step_json, &error));
+                            continue;
+                        }
+                    },
                 };
                 let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
                 let rows = match resolve_step_rows(step_json, &snapshot) {
@@ -559,6 +670,8 @@ impl Walkthrough {
                     node_id: step_json.node.clone().map(SharedString::from),
                     color: step_json.color,
                     highlights,
+                    data: resolve_step_data(&step_json.data, &mut latest_values),
+                    file_label: file_label.into(),
                 });
             }
 
@@ -622,12 +735,133 @@ impl Walkthrough {
                             label: entry.label.into(),
                         })
                         .collect(),
+                    example: json.example.map(SharedString::from),
                 })
             } else {
                 Err(errors)
             }
         })
     }
+}
+
+enum StepFile {
+    Missing,
+    InProject(ProjectPath, Task<anyhow::Result<Entity<Buffer>>>),
+    OutsideProject(Task<anyhow::Result<Option<(ProjectPath, Entity<Buffer>)>>>),
+}
+
+fn path_not_found(step: &WalkthroughStepJson) -> StepError {
+    StepError {
+        step: Some(step.id.clone()),
+        kind: StepErrorKind::PathNotFound {
+            path: step.path.clone(),
+        },
+    }
+}
+
+fn open_failed(step: &WalkthroughStepJson, error: &anyhow::Error) -> StepError {
+    StepError {
+        step: Some(step.id.clone()),
+        kind: StepErrorKind::OpenFailed {
+            path: step.path.clone(),
+            message: error.to_string(),
+        },
+    }
+}
+
+/// Opens a file that is not in any visible worktree by adding it to the
+/// project as a non-visible worktree, as opening an arbitrary file from disk
+/// does. The buffer keeps the worktree alive. Resolves to `None` when the path
+/// is not a file.
+fn open_outside_project_file(
+    absolute_path: String,
+    project: Entity<Project>,
+    cx: &mut App,
+) -> Task<anyhow::Result<Option<(ProjectPath, Entity<Buffer>)>>> {
+    let find_worktree = project.update(cx, |project, cx| {
+        project.find_or_create_worktree(&absolute_path, false, cx)
+    });
+    cx.spawn(async move |cx| {
+        let (worktree, relative_path) = find_worktree.await?;
+        // A worktree for a path that does not exist is created without
+        // entries, so the file's presence is only known after the scan.
+        let scan_complete = worktree.read_with(cx, |worktree, _| {
+            worktree.as_local().map(|local| local.scan_complete())
+        });
+        if let Some(scan_complete) = scan_complete {
+            scan_complete.await;
+        }
+        let project_path = worktree.read_with(cx, |worktree, _| ProjectPath {
+            worktree_id: worktree.id(),
+            path: relative_path,
+        });
+        let is_file = project.read_with(cx, |project, cx| {
+            project
+                .entry_for_path(&project_path, cx)
+                .is_some_and(|entry| entry.is_file())
+        });
+        if !is_file {
+            return Ok(None);
+        }
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_buffer(project_path.clone(), cx)
+            })
+            .await?;
+        Ok(Some((project_path, buffer)))
+    })
+}
+
+fn validate_step_data(data: &[StepDataJson]) -> Vec<StepErrorKind> {
+    let mut errors = Vec::new();
+    if data.len() > MAX_STEP_DATA {
+        errors.push(StepErrorKind::TooManyData { count: data.len() });
+        return errors;
+    }
+    let mut seen_names = HashSet::default();
+    let mut reported_names = HashSet::default();
+    for entry in data {
+        if entry.name.trim().is_empty() {
+            errors.push(StepErrorKind::EmptyDataName);
+        } else if !seen_names.insert(entry.name.as_str())
+            && reported_names.insert(entry.name.as_str())
+        {
+            errors.push(StepErrorKind::DuplicateDataName {
+                name: entry.name.clone(),
+            });
+        }
+        let length = entry.value.chars().count();
+        if length > MAX_DATA_VALUE_LENGTH {
+            errors.push(StepErrorKind::DataValueTooLong {
+                name: entry.name.clone(),
+                length,
+            });
+        }
+    }
+    errors
+}
+
+/// Compares each entry with the most recent earlier step that had the same
+/// name, which `latest_values` tracks across calls in step order.
+fn resolve_step_data(
+    data: &[StepDataJson],
+    latest_values: &mut HashMap<String, SharedString>,
+) -> Vec<StepData> {
+    data.iter()
+        .map(|entry| {
+            let value = SharedString::from(entry.value.clone());
+            let change = match latest_values.insert(entry.name.clone(), value.clone()) {
+                None => DataChange::New,
+                Some(previous) if previous != value => DataChange::Changed { previous },
+                Some(_) => DataChange::Unchanged,
+            };
+            StepData {
+                name: entry.name.clone().into(),
+                value,
+                change,
+            }
+        })
+        .collect()
 }
 
 /// Resolves the first and last row of a step, both inclusive.
@@ -1171,6 +1405,14 @@ mod tests {
             node: None,
             color: None,
             highlights: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    fn data(name: &str, value: &str) -> StepDataJson {
+        StepDataJson {
+            name: name.to_string(),
+            value: value.to_string(),
         }
     }
 
@@ -1181,6 +1423,7 @@ mod tests {
             steps,
             flowchart: None,
             legend: Vec::new(),
+            example: None,
         }
     }
 
@@ -1650,6 +1893,225 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_step_data_changes_resolve(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+
+        let mut first = step("first", "root/src/one.rs", 1, 2);
+        first.data = vec![data("quantity", "2"), data("cart", "[]")];
+        let mut second = step("second", "root/src/two.rs", 3, 5);
+        second.data = vec![data("cart", "[{\"sku\": \"A-12\"}]"), data("quantity", "2")];
+        let mut third = step("third", "root/src/one.rs", 10, 12);
+        third.data = vec![data("cart", "[{\"sku\": \"A-12\"}]"), data("total", "24")];
+        let plain = step("plain", "root/src/one.rs", 20, 21);
+
+        let mut json = walkthrough_json(vec![first, second, plain, third]);
+        json.example = Some("A user adds 2 units of A-12 to an empty cart".to_string());
+        let walkthrough = load(json, &project, cx)
+            .await
+            .expect("walkthrough should be valid");
+
+        assert_eq!(
+            walkthrough.example.as_deref(),
+            Some("A user adds 2 units of A-12 to an empty cart")
+        );
+        let summarize = |step: &WalkthroughStep| {
+            step.data
+                .iter()
+                .map(|data| (data.name.to_string(), data.change.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            summarize(&walkthrough.steps[0]),
+            [
+                ("quantity".to_string(), DataChange::New),
+                ("cart".to_string(), DataChange::New),
+            ]
+        );
+        assert_eq!(
+            summarize(&walkthrough.steps[1]),
+            [
+                (
+                    "cart".to_string(),
+                    DataChange::Changed {
+                        previous: "[]".into()
+                    }
+                ),
+                ("quantity".to_string(), DataChange::Unchanged),
+            ]
+        );
+        assert!(walkthrough.steps[2].data.is_empty());
+        assert_eq!(
+            summarize(&walkthrough.steps[3]),
+            [
+                ("cart".to_string(), DataChange::Unchanged),
+                ("total".to_string(), DataChange::New),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_step_data_validation_errors(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+
+        let mut crowded = step("crowded", "root/src/one.rs", 1, 2);
+        crowded.data = (0..9)
+            .map(|index| data(&format!("name{index}"), "1"))
+            .collect();
+        let mut malformed = step("malformed", "root/src/one.rs", 3, 4);
+        malformed.data = vec![
+            data("", "1"),
+            data("  ", "1"),
+            data("twice", "1"),
+            data("twice", "2"),
+            data("twice", "3"),
+            data("long", &"x".repeat(MAX_DATA_VALUE_LENGTH + 1)),
+            data("limit", &"é".repeat(MAX_DATA_VALUE_LENGTH)),
+        ];
+
+        let errors = load(walkthrough_json(vec![crowded, malformed]), &project, cx)
+            .await
+            .err()
+            .expect("walkthrough should be invalid");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>(),
+            [
+                "Step `crowded`: a step can have at most 8 data entries, but 9 were given",
+                "Step `malformed`: a data entry has an empty `name`",
+                "Step `malformed`: a data entry has an empty `name`",
+                "Step `malformed`: the data name `twice` is used more than once in this step",
+                "Step `malformed`: the value of data `long` is 401 characters, but at most 400 are allowed",
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_steps_outside_the_project(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/frontend"),
+            json!({ "src": { "app.rs": numbered_lines(20) } }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/backend"),
+            json!({ "src": { "server.rs": numbered_lines(30), "other.rs": numbered_lines(5) } }),
+        )
+        .await;
+        let project = Project::test(fs, [path!("/frontend").as_ref()], cx).await;
+        let visible_roots = |cx: &mut TestAppContext| {
+            project.read_with(cx, |project, cx| {
+                project
+                    .visible_worktrees(cx)
+                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let roots_before = visible_roots(cx);
+
+        let mut server = step("server", path!("/backend/src/server.rs"), 10, 12);
+        server.anchor_text = Some("line 10".to_string());
+        server.data = vec![data("status", "200")];
+        let mut again = step("again", path!("/backend/src/server.rs"), 20, 21);
+        again.highlights = vec![highlight(20, 20, None, HighlightColor::Blue)];
+        let mut json = walkthrough_json(vec![
+            step("app", "frontend/src/app.rs", 1, 2),
+            server,
+            again,
+        ]);
+        json.legend = legend(&[HighlightColor::Blue]);
+        let walkthrough = load(json, &project, cx)
+            .await
+            .expect("steps outside the project should resolve");
+
+        assert_eq!(visible_roots(cx), roots_before);
+        assert_eq!(
+            walkthrough
+                .steps
+                .iter()
+                .map(|step| step.file_label.to_string())
+                .collect::<Vec<_>>(),
+            [
+                "app.rs",
+                path!("/backend/src/server.rs"),
+                path!("/backend/src/server.rs")
+            ]
+        );
+        cx.update(|cx| {
+            let server = &walkthrough.steps[1];
+            assert_eq!(server.point_range(cx).start.row, 9);
+            assert_eq!(walkthrough.steps[2].highlights.len(), 1);
+            let absolute_path = project.read(cx).absolute_path(&server.path, cx);
+            assert_eq!(
+                absolute_path.as_deref(),
+                Some(Path::new(path!("/backend/src/server.rs")))
+            );
+        });
+        assert_eq!(walkthrough.file_count(), 2);
+
+        let errors = load(
+            walkthrough_json(vec![
+                step("missing", path!("/backend/src/missing.rs"), 1, 2),
+                step("directory", path!("/backend/src"), 1, 2),
+                step("nowhere", path!("/elsewhere/file.rs"), 1, 2),
+                step("relative", "backend/src/other.rs", 1, 2),
+            ]),
+            &project,
+            cx,
+        )
+        .await
+        .err()
+        .expect("only real files can be annotated");
+        assert_eq!(
+            error_kinds(errors),
+            vec![
+                (
+                    Some("missing".to_string()),
+                    StepErrorKind::PathNotFound {
+                        path: path!("/backend/src/missing.rs").to_string()
+                    }
+                ),
+                (
+                    Some("directory".to_string()),
+                    StepErrorKind::PathNotFound {
+                        path: path!("/backend/src").to_string()
+                    }
+                ),
+                (
+                    Some("nowhere".to_string()),
+                    StepErrorKind::PathNotFound {
+                        path: path!("/elsewhere/file.rs").to_string()
+                    }
+                ),
+                (
+                    Some("relative".to_string()),
+                    StepErrorKind::PathNotFound {
+                        path: "backend/src/other.rs".to_string()
+                    }
+                ),
+            ]
+        );
+        assert_eq!(visible_roots(cx), roots_before);
+
+        let result = cx
+            .update(|cx| {
+                show_walkthrough(
+                    walkthrough_json(vec![step("server", path!("/backend/src/other.rs"), 1, 2)]),
+                    &project,
+                    cx,
+                )
+            })
+            .await;
+        assert_eq!(
+            result.as_deref(),
+            Ok("Walkthrough shown to the user: 1 step across 1 file.")
+        );
+    }
+
+    #[gpui::test]
     async fn test_anchors_follow_edits_and_become_stale(cx: &mut TestAppContext) {
         let project = test_project(cx).await;
         let walkthrough = load(
@@ -1771,6 +2233,29 @@ mod tests {
         assert_eq!(json.steps[1].color, None);
         assert!(json.steps[1].highlights.is_empty());
         assert_eq!(json.legend[1].color, HighlightColor::Red);
+        assert_eq!(json.example, None);
+        assert!(json.steps[0].data.is_empty());
+
+        let with_data: WalkthroughJson = serde_json::from_value(json!({
+            "title": "Cart",
+            "summary": "Adding to a cart.",
+            "example": "A user adds 2 units of A-12 to an empty cart",
+            "steps": [{
+                "id": "add",
+                "path": "src/cart.rs",
+                "start_line": 1,
+                "end_line": 2,
+                "title": "Add",
+                "comment": "Adds.",
+                "data": [{ "name": "quantity", "value": "2" }]
+            }]
+        }))
+        .expect("example data should deserialize");
+        assert_eq!(
+            with_data.example.as_deref(),
+            Some("A user adds 2 units of A-12 to an empty cart")
+        );
+        assert_eq!(with_data.steps[0].data, [data("quantity", "2")]);
 
         let fixture: WalkthroughJson =
             serde_json::from_str(include_str!("../test_fixtures/sample.json"))

@@ -14,10 +14,14 @@ use gpui::{
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use ui::{IconButton, IconButtonShape, Tooltip, prelude::*};
 use walkthrough::{
-    GoToStep, HighlightColor, StepId, WalkthroughEvent, WalkthroughStep, WalkthroughStore,
+    DataChange, GoToStep, HighlightColor, StepData, StepId, WalkthroughEvent, WalkthroughStep,
+    WalkthroughStore,
 };
 
 const MAX_COMMENT_ROWS: f32 = 14.;
+const MAX_DATA_ROWS: f32 = 10.;
+const MAX_DATA_VALUE_LINES: usize = 3;
+const MAX_DATA_NAME_WIDTH_IN_EMS: f32 = 24.;
 const MAX_BLOCK_WIDTH_IN_EMS: f32 = 110.;
 const STALE_MESSAGE: &str = "This code has changed since the walkthrough was written";
 
@@ -507,6 +511,24 @@ impl StepBlockRenderer {
                         ),
                     )
                 })
+                .when(!self.step.data.is_empty(), |this| {
+                    this.child(
+                        v_flex()
+                            .id(("walkthrough-step-data", index))
+                            .pt_1()
+                            .gap_0p5()
+                            .max_h(block_context.line_height * MAX_DATA_ROWS)
+                            .overflow_y_scroll()
+                            .children(self.step.data.iter().enumerate().map(|(row, entry)| {
+                                render_data_row(
+                                    entry,
+                                    (index, row),
+                                    block_context.em_width * MAX_DATA_NAME_WIDTH_IN_EMS,
+                                    cx,
+                                )
+                            })),
+                    )
+                })
         });
 
         div()
@@ -537,6 +559,66 @@ impl StepBlockRenderer {
             )
             .into_any_element()
     }
+}
+
+fn render_data_row(
+    entry: &StepData,
+    (step_index, row): (usize, usize),
+    max_name_width: Pixels,
+    cx: &App,
+) -> impl IntoElement {
+    let is_marked = !matches!(entry.change, DataChange::Unchanged);
+    let previous = match &entry.change {
+        DataChange::Changed { previous } => Some(previous.clone()),
+        DataChange::New | DataChange::Unchanged => None,
+    };
+    h_flex()
+        .debug_selector(|| format!("walkthrough-step-data-{step_index}-{row}"))
+        .gap_2()
+        .items_start()
+        .child(
+            h_flex()
+                .flex_none()
+                .max_w(max_name_width)
+                .gap_1()
+                .child(
+                    div()
+                        .flex_none()
+                        .size_1p5()
+                        .rounded_full()
+                        .when(is_marked, |marker| {
+                            marker.bg(cx.theme().colors().text_accent)
+                        }),
+                )
+                .child(
+                    Label::new(entry.name.clone())
+                        .size(LabelSize::Small)
+                        .color(if is_marked {
+                            Color::Accent
+                        } else {
+                            Color::Muted
+                        })
+                        .truncate(),
+                ),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .flex_1()
+                .child(
+                    div()
+                        .line_clamp(MAX_DATA_VALUE_LINES)
+                        .child(Label::new(entry.value.clone()).buffer_font(cx)),
+                )
+                .children(previous.map(|previous| {
+                    div().line_clamp(1).child(
+                        Label::new(format!("was {previous}"))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .buffer_font(cx),
+                    )
+                })),
+        )
 }
 
 #[cfg(test)]
@@ -793,6 +875,79 @@ mod tests {
                 ((10, 0)..(11, 7), green.opacity(0.35)),
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn test_step_data_rows(cx: &mut TestAppContext) {
+        use walkthrough::{DataChange, StepDataJson};
+
+        let (test, cx) = init_test(cx).await;
+        let data = |name: &str, value: &str| StepDataJson {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        let mut json = sample_walkthrough(false);
+        json.example = Some("A user adds 2 units to an empty cart".to_string());
+        json.steps[0].data = vec![data("cart", "[]"), data("quantity", "2")];
+        json.steps[2].data = vec![data("cart", "[A-12]"), data("quantity", "2")];
+        load_walkthrough(json, &test, cx).await;
+        let one = active_editor(&test, cx);
+
+        one.read_with(cx, |editor, _| {
+            let addon = editor.addon::<WalkthroughAddon>().expect("addon");
+            let changes = addon
+                .blocks
+                .iter()
+                .map(|block| {
+                    block
+                        .renderer
+                        .step
+                        .data
+                        .iter()
+                        .map(|entry| entry.change.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                changes,
+                [
+                    vec![DataChange::New, DataChange::New],
+                    vec![
+                        DataChange::Changed {
+                            previous: "[]".into()
+                        },
+                        DataChange::Unchanged
+                    ],
+                ]
+            );
+        });
+        assert_eq!(annotations(&one, cx).blocks, 2);
+        const SELECTORS: [[&str; 2]; 3] = [
+            ["walkthrough-step-data-0-0", "walkthrough-step-data-0-1"],
+            ["walkthrough-step-data-1-0", "walkthrough-step-data-1-1"],
+            ["walkthrough-step-data-2-0", "walkthrough-step-data-2-1"],
+        ];
+        let drawn_rows = |cx: &mut VisualTestContext| {
+            let mut drawn = Vec::new();
+            for (step, selectors) in SELECTORS.iter().enumerate() {
+                for (row, selector) in selectors.iter().enumerate() {
+                    if cx.debug_bounds(selector).is_some() {
+                        drawn.push((step, row));
+                    }
+                }
+            }
+            drawn
+        };
+        assert_eq!(drawn_rows(cx), [(0, 0), (0, 1), (2, 0), (2, 1)]);
+
+        one.update(cx, |editor, cx| {
+            toggle_collapsed(editor, &StepId::new("c"), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(drawn_rows(cx), [(0, 0), (0, 1)]);
+
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        assert_eq!(drawn_rows(cx), []);
     }
 
     #[gpui::test]

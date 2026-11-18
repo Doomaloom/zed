@@ -79,34 +79,8 @@ impl McpServer {
     }
 
     pub fn add_tool<T: McpServerTool + Clone + 'static>(&mut self, tool: T) {
-        let mut settings = schemars::generate::SchemaSettings::draft07();
-        settings.inline_subschemas = true;
-        let mut generator = settings.into_generator();
-
-        let input_schema = generator.root_schema_for::<T::Input>();
-
-        let description = input_schema
-            .get("description")
-            .and_then(|desc| desc.as_str())
-            .map(|desc| desc.to_string());
-        debug_assert!(
-            description.is_some(),
-            "Input schema struct must include a doc comment for the tool description"
-        );
-
         let registered_tool = RegisteredTool {
-            tool: Tool {
-                name: T::NAME.into(),
-                title: None,
-                description,
-                input_schema: input_schema.into(),
-                output_schema: if TypeId::of::<T::Output>() == TypeId::of::<()>() {
-                    None
-                } else {
-                    Some(generator.root_schema_for::<T::Output>().into())
-                },
-                annotations: Some(tool.annotations()),
-            },
+            tool: tool_definition(&tool),
             handler: Box::new({
                 move |input_value, cx| {
                     let input = match input_value {
@@ -390,6 +364,38 @@ impl McpServer {
             }
         }
         Ok(())
+    }
+}
+
+/// Builds the MCP definition that `tools/list` advertises for `tool`, without
+/// needing a running server.
+pub fn tool_definition<T: McpServerTool + 'static>(tool: &T) -> Tool {
+    let mut settings = schemars::generate::SchemaSettings::draft07();
+    settings.inline_subschemas = true;
+    let mut generator = settings.into_generator();
+
+    let input_schema = generator.root_schema_for::<T::Input>();
+
+    let description = input_schema
+        .get("description")
+        .and_then(|desc| desc.as_str())
+        .map(|desc| desc.to_string());
+    debug_assert!(
+        description.is_some(),
+        "Input schema struct must include a doc comment for the tool description"
+    );
+
+    Tool {
+        name: T::NAME.into(),
+        title: None,
+        description,
+        input_schema: input_schema.into(),
+        output_schema: if TypeId::of::<T::Output>() == TypeId::of::<()>() {
+            None
+        } else {
+            Some(generator.root_schema_for::<T::Output>().into())
+        },
+        annotations: Some(tool.annotations()),
     }
 }
 

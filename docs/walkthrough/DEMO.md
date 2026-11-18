@@ -10,6 +10,18 @@ The `walkthrough` feature flag is enabled for all users in this fork, so the fea
 
 The Zed Agent has the tool in the default Write and Ask profiles. External agents (Copilot, Claude Agent, Codex, Gemini CLI and other ACP agents) get the same tool from an MCP server named `zed` that Zed adds to their sessions automatically. This works for local projects on Linux and macOS. It also targets Windows, but that path has never been compiled or run there.
 
+### Standalone MCP clients
+
+An MCP client that Zed did not start can use the same tool by running the fork's Zed binary with the single argument `--mcp` as a stdio MCP server. Zed must be running with the project open locally.
+
+```json
+{ "mcpServers": { "zed": { "command": "C:\\path\\to\\zed.exe", "args": ["--mcp"] } } }
+```
+
+The `--mcp` process answers `initialize`, `tools/list` and `ping` itself and forwards each `tools/call` to a running Zed. The walkthrough opens in the Zed window whose project contains the client's working directory, or in the most recently opened window if none does. If no Zed with a local project is running, the call returns a tool error saying so.
+
+This config shape has not been verified with any specific client.
+
 ## Try it without an agent
 
 1. Open the Zed repository in the built fork.
@@ -45,6 +57,12 @@ The same prompt works in an external agent thread. There the call shows up as th
 
 All except the last are available only while a walkthrough is active. Each comment block also has previous, next and collapse buttons, and clicking a step title, a row in the step list or a flowchart node jumps to that step.
 
+## Colours, example data and other projects
+
+- Steps and inner highlights can be coloured, with each colour explained in the walkthrough's `legend`.
+- A walkthrough can name one example scenario (`example`) and give each step a few `data` entries (`name` and `value`, at most 8 per step, values up to 400 characters). Zed compares each entry with the latest earlier step that used the same name, and marks it as new or changed (with the previous value). The scenario text shows once in the flowchart panel, above the step list.
+- A step's `path` may be an absolute path to a file outside the open project, so one walkthrough can cover, for example, a frontend and a backend. The file opens as an ordinary tab in the same window, through a hidden worktree, and the project's own folders do not change. A missing or unreadable file is reported like any other bad path.
+
 ## Checklist for a person
 
 - [ ] The agent prompt above produces one `create_walkthrough` call and a brief chat reply.
@@ -54,6 +72,10 @@ All except the last are available only while a walkthrough is active. Each comme
 - [ ] Coloured steps and inner highlights use the colours named in the walkthrough, inner highlights are stronger in the active step, and each comment block lists the legend labels for the colours it uses.
 - [ ] The flowchart panel shows the full legend above the step list and a dot beside each coloured step.
 - [ ] A walkthrough with no colours looks the same as before.
+- [ ] A step whose `path` is an absolute path to a file in another project opens as a tab in the same window, is highlighted and has its comment block, and the flowchart step list shows its full path. The file tree does not gain a folder.
+- [ ] Data entries under a comment show the name in muted text and the value in the editor font. New and changed entries have an accent-coloured name and a dot, and changed entries also show "was ..." with the previous value.
+- [ ] Long data values stop at three lines, a long list scrolls inside the block instead of growing it, and collapsing the comment hides the data.
+- [ ] The example scenario shows once in the flowchart panel above the step list, and a walkthrough without `example` or `data` looks the same as before.
 - [ ] Next and previous move across at least two files, and the flowchart highlight follows.
 - [ ] The flowchart opens to the right and focus stays in the code editor.
 - [ ] Clicking a step row jumps to its code. Clicking a flowchart node does the same, and the pointer changes over clickable nodes.
@@ -75,7 +97,8 @@ All except the last are available only while a walkthrough is active. Each comme
 - Not available for remote (SSH) projects. The `zed` MCP server is added for local projects only.
 - Not added if you already have a context server named `zed`. Rename yours to get the walkthrough tool.
 - With ACP v2 agents, the server is only added if the agent advertises stdio MCP support.
-- Not verified against each external agent by a person yet. The MCP server's tests pass, but the bridge (`zed --nc <socket>`) has not been exercised end to end with a real agent.
+- Not verified against each external agent by a person yet. The MCP server's tests pass, but the bridge (`zed --nc <socket>`) and the standalone server (`zed --mcp`) have not been exercised end to end with a real agent.
+- `zed --mcp` finds Zed through files in the `mcp_servers` folder of Zed's data directory. It does not know about a custom `--user-data-dir`, and it matches the client's working directory to project roots by plain path prefix.
 - Multibuffer editors (project search, diagnostics, diffs) are not annotated.
 - A walkthrough lives in memory: it is gone after a restart and is not shared with collaborators.
 - The flowchart has no pan or zoom.
