@@ -1,11 +1,12 @@
 use crate::{
     ApplyCodeActionTool, AskUserTool, CodeActionStore, ContextServerRegistry, CopyPathTool,
     CreateDirectoryTool, CreateThreadTool, CreateWalkthroughTool, DbLanguageModel, DbThread,
-    DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, FindReferencesTool,
-    GetCodeActionsTool, GoToDefinitionTool, GrepTool, ListAgentsAndModelsTool, ListDirectoryTool,
-    MovePathTool, ProjectSnapshot, ReadFileTool, RenameTool, SandboxedTerminalTool, SpawnAgentTool,
-    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
-    WriteFileTool, decide_permission_from_settings,
+    DeletePathTool, DiagnosticsTool, EditFileTool, EditWalkthroughTool, FetchTool, FindPathTool,
+    FindReferencesTool, GetCodeActionsTool, GetWalkthroughTool, GoToDefinitionTool, GrepTool,
+    ListAgentsAndModelsTool, ListDirectoryTool, MovePathTool, ProjectSnapshot, ReadFileTool,
+    RenameTool, SandboxedTerminalTool, SpawnAgentTool, SystemPromptTemplate, Template, Templates,
+    TerminalTool, ToolPermissionDecision, WebSearchTool, WriteFileTool,
+    decide_permission_from_settings,
 };
 use acp_thread::{AgentModelId, ClientUserMessageId, MentionUri, ProcessOutput};
 use action_log::ActionLog;
@@ -2242,6 +2243,8 @@ impl Thread {
         self.add_tool(CopyPathTool::new(self.project.clone()));
         self.add_tool(CreateDirectoryTool::new(self.project.clone()));
         self.add_tool(CreateWalkthroughTool::new(self.project.clone()));
+        self.add_tool(EditWalkthroughTool::new(self.project.clone()));
+        self.add_tool(GetWalkthroughTool::new(self.project.clone()));
         self.add_tool(DeletePathTool::new(
             self.project.clone(),
             self.action_log.clone(),

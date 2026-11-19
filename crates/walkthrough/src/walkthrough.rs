@@ -1,6 +1,11 @@
+mod history;
 pub mod mcp_server;
 
-use std::{ops::Range, path::Path, sync::Arc};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use collections::{HashMap, HashSet};
 use gpui::{
@@ -11,6 +16,9 @@ use language::{Buffer, BufferId, BufferSnapshot, Point, ToOffset as _, ToPoint a
 use project::{Project, ProjectPath};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use util::ResultExt as _;
+
+pub use history::{HistoryEntry, MAX_WALKTHROUGH_HISTORY, set_history_directory};
 
 pub const MIN_STEPS: usize = 1;
 pub const MAX_STEPS: usize = 30;
@@ -33,6 +41,8 @@ actions!(
         Dismiss,
         /// Loads a code walkthrough from a JSON file.
         LoadFromJson,
+        /// Shows a code walkthrough that was shown before in this project.
+        Reopen,
     ]
 );
 
@@ -192,7 +202,17 @@ impl Flowchart {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalkthroughEvent {
     Created(WalkthroughId),
-    ActiveStepChanged { step: StepId },
+    /// The active walkthrough was replaced by an edited version of itself.
+    /// `active_step_moved` is set when the step the user is on is a different
+    /// step, or covers different code, than before.
+    Updated {
+        id: WalkthroughId,
+        active_step_moved: bool,
+        flowchart_added: bool,
+    },
+    ActiveStepChanged {
+        step: StepId,
+    },
     Dismissed,
 }
 
@@ -210,6 +230,7 @@ pub enum WalkthroughEvent {
 /// - Every color you use must have an entry in `legend` with a label of 1 to 4 words. The legend is shown to the user.
 /// - Use a step's `highlights` to mark the exact expression or lines a comment talks about, and refer to them in the comment by their legend label.
 /// - When the code transforms data, set `example` to one or two sentences naming a single concrete scenario, and give each step `data` holding the few values in play at that step. Keep values short, list only values relevant to the step, and reuse the same `name` across steps so the user sees how a value changes.
+/// - To change or extend a walkthrough that is already showing, use `edit_walkthrough` (and `get_walkthrough` to see it) instead of creating a new one.
 /// - After the walkthrough is shown, reply with one or two sentences. Do not repeat the explanation in chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WalkthroughJson {
@@ -331,6 +352,76 @@ pub struct WalkthroughStepJson {
     pub data: Vec<StepDataJson>,
 }
 
+/// Returns the code walkthrough that is currently showing in this project, in
+/// the same format `create_walkthrough` accepts, and says which step the user
+/// is on. Call this before `edit_walkthrough` so the edit is based on what the
+/// user sees.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetWalkthroughJson {}
+
+/// Changes the code walkthrough that is already showing, in place. The user
+/// stays on their current step. Use it when the user asks to explain a step in
+/// more detail, add or remove steps, or fix the flowchart, instead of calling
+/// `create_walkthrough` again. Call `get_walkthrough` first to see the current
+/// step ids and content.
+///
+/// - Only include what changes. Every field is optional, but at least one must be given.
+/// - A step in `steps` is a complete step, with the same fields as in `create_walkthrough`. When its `id` already exists, it replaces that step in place, so repeat every field you want to keep.
+/// - A step whose `id` is new is inserted after the step named by `after`, or appended at the end when `after` is not given. Steps are applied in order, so a later new step may use an earlier new step's id as `after`.
+/// - If you change `flowchart`, `legend` or step `node` and `color` values, check the result is still consistent: every `node` must exist in the flowchart and every color used must be in the legend.
+/// - The result is validated like a new walkthrough. If anything is wrong, nothing is changed and every problem is listed.
+/// - After the walkthrough is updated, reply with one or two sentences. Do not repeat the explanation in chat.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WalkthroughEditJson {
+    /// A new title for the walkthrough. Leave out to keep the current one.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// A new markdown summary. Leave out to keep the current one.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// New Mermaid source for the flowchart. Leave out to keep the current
+    /// one. A flowchart cannot be removed with this tool.
+    #[serde(default)]
+    pub flowchart: Option<String>,
+    /// New example scenario text. Leave out to keep the current one. An
+    /// example cannot be removed with this tool.
+    #[serde(default)]
+    pub example: Option<String>,
+    /// The complete new legend, replacing the current one. Leave out to keep
+    /// the current legend. An empty list removes the legend.
+    #[serde(default)]
+    pub legend: Option<Vec<LegendEntryJson>>,
+    /// Steps to replace or insert, applied in order after `remove_steps`.
+    #[serde(default)]
+    pub steps: Vec<WalkthroughStepEditJson>,
+    /// Ids of existing steps to delete.
+    #[serde(default)]
+    pub remove_steps: Vec<String>,
+}
+
+impl WalkthroughEditJson {
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.summary.is_none()
+            && self.flowchart.is_none()
+            && self.example.is_none()
+            && self.legend.is_none()
+            && self.steps.is_empty()
+            && self.remove_steps.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WalkthroughStepEditJson {
+    #[serde(flatten)]
+    pub step: WalkthroughStepJson,
+    /// The id of the existing step to insert this step after. Only for a step
+    /// whose `id` is new: leave it out to append the step at the end, and
+    /// leave it out when replacing an existing step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepError {
     /// The id of the step the error belongs to, or `None` when it concerns
@@ -400,6 +491,13 @@ pub enum StepErrorKind {
         name: String,
         length: usize,
     },
+    UnknownRemovedStep {
+        id: String,
+    },
+    UnknownAfterStep {
+        after: String,
+    },
+    AfterOnExistingStep,
 }
 
 impl std::fmt::Display for StepError {
@@ -491,6 +589,18 @@ impl std::fmt::Display for StepError {
             StepErrorKind::DataValueTooLong { name, length } => write!(
                 formatter,
                 "the value of data `{name}` is {length} characters, but at most {MAX_DATA_VALUE_LENGTH} are allowed"
+            ),
+            StepErrorKind::UnknownRemovedStep { id } => write!(
+                formatter,
+                "`remove_steps` lists `{id}`, which is not a step id in the walkthrough"
+            ),
+            StepErrorKind::UnknownAfterStep { after } => write!(
+                formatter,
+                "`after` is `{after}`, which is not a step id in the walkthrough"
+            ),
+            StepErrorKind::AfterOnExistingStep => write!(
+                formatter,
+                "this id already exists, so the step is replaced in place; leave out `after`"
             ),
         }
     }
@@ -1167,8 +1277,15 @@ fn link_text_end(text: &str) -> Option<usize> {
 
 pub struct WalkthroughStore {
     active: Option<Walkthrough>,
+    /// The input the active walkthrough was built from.
+    active_json: Option<WalkthroughJson>,
     active_step_index: usize,
     next_id: usize,
+    project: WeakEntity<Project>,
+    history: Vec<HistoryEntry>,
+    history_loaded: bool,
+    history_path: Option<PathBuf>,
+    save_history_task: Option<Task<()>>,
 }
 
 #[derive(Default)]
@@ -1191,8 +1308,14 @@ impl WalkthroughStore {
 
         let store = cx.new(|_| Self {
             active: None,
+            active_json: None,
             active_step_index: 0,
             next_id: 0,
+            project: weak_project.clone(),
+            history: Vec::new(),
+            history_loaded: false,
+            history_path: None,
+            save_history_task: None,
         });
         cx.default_global::<GlobalWalkthroughStores>()
             .0
@@ -1208,18 +1331,155 @@ impl WalkthroughStore {
 
     /// Makes `walkthrough` the active one, replacing any existing
     /// walkthrough, and activates its first step.
-    pub fn set_walkthrough(&mut self, mut walkthrough: Walkthrough, cx: &mut Context<Self>) {
+    pub fn set_walkthrough(&mut self, walkthrough: Walkthrough, cx: &mut Context<Self>) {
+        self.install_walkthrough(walkthrough, None, cx);
+    }
+
+    fn install_walkthrough(
+        &mut self,
+        mut walkthrough: Walkthrough,
+        source: Option<WalkthroughJson>,
+        cx: &mut Context<Self>,
+    ) {
         let id = WalkthroughId(self.next_id);
         self.next_id += 1;
         walkthrough.id = id;
         self.active = Some(walkthrough);
+        self.active_json = source;
         self.active_step_index = 0;
         cx.emit(WalkthroughEvent::Created(id));
         cx.notify();
     }
 
+    /// Swaps the active walkthrough for `walkthrough`, an edited version of
+    /// the one built from `base`, keeping the user on the same step where it
+    /// still exists. Returns `false` and changes nothing when the active
+    /// walkthrough is no longer the one `base` describes.
+    fn replace_walkthrough(
+        &mut self,
+        mut walkthrough: Walkthrough,
+        source: WalkthroughJson,
+        base: &WalkthroughJson,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.active_json.as_ref() != Some(base) {
+            return false;
+        }
+        let Some(previous) = self.active.as_ref() else {
+            return false;
+        };
+        let previous_step = previous.steps.get(self.active_step_index);
+        let last_index = walkthrough.steps.len().saturating_sub(1);
+        let index = previous_step
+            .and_then(|step| walkthrough.step_index(&step.id))
+            .unwrap_or_else(|| self.active_step_index.min(last_index));
+        let active_step_moved = match (previous_step, walkthrough.steps.get(index)) {
+            (Some(previous_step), Some(step)) => {
+                previous_step.id != step.id
+                    || previous_step.path != step.path
+                    || previous_step.point_range(cx) != step.point_range(cx)
+            }
+            _ => true,
+        };
+        let flowchart_added = previous.flowchart.is_none() && walkthrough.flowchart.is_some();
+
+        let id = previous.id;
+        walkthrough.id = id;
+        self.active = Some(walkthrough);
+        self.active_json = Some(source);
+        self.active_step_index = index;
+        cx.emit(WalkthroughEvent::Updated {
+            id,
+            active_step_moved,
+            flowchart_added,
+        });
+        cx.notify();
+        true
+    }
+
     pub fn active(&self) -> Option<&Walkthrough> {
         self.active.as_ref()
+    }
+
+    /// The input the active walkthrough was built from, in the format agents
+    /// create it in. `None` when there is no active walkthrough.
+    pub fn active_json(&self) -> Option<&WalkthroughJson> {
+        self.active_json.as_ref()
+    }
+
+    /// The walkthroughs shown for this project, most recent first. Empty
+    /// until the task from [`Self::load_history`] has finished.
+    pub fn history(&self) -> &[HistoryEntry] {
+        &self.history
+    }
+
+    /// Reads the project's saved history the first time it is needed. Projects
+    /// without a stable local file keep their history in memory only.
+    pub fn load_history(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        if self.history_loaded {
+            return Task::ready(());
+        }
+        let Some(project) = self.project.upgrade() else {
+            self.history_loaded = true;
+            return Task::ready(());
+        };
+        let Some(path) = history::history_file(project.read(cx), cx) else {
+            self.history_loaded = true;
+            return Task::ready(());
+        };
+        let fs = project.read(cx).fs().clone();
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { history::load_entries(fs.as_ref(), &path).await }
+                })
+                .await
+                .log_err()
+                .unwrap_or_default();
+            this.update(cx, |store, cx| {
+                if store.history_loaded {
+                    return;
+                }
+                store.history_loaded = true;
+                store.history_path = Some(path);
+                store.history = entries;
+                cx.notify();
+            })
+            .log_err();
+        })
+    }
+
+    /// Moves `walkthrough` to the front of the history, or adds it there, and
+    /// saves the history. An entry equal to `replaces`, the walkthrough that
+    /// `walkthrough` is an edit of, is dropped. [`Self::load_history`] must
+    /// have finished first, or the saved file would lose its older entries.
+    fn record_history(
+        &mut self,
+        walkthrough: WalkthroughJson,
+        replaces: Option<&WalkthroughJson>,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.retain(|entry| {
+            entry.walkthrough != walkthrough && Some(&entry.walkthrough) != replaces
+        });
+        self.history.insert(0, HistoryEntry::now(walkthrough));
+        self.history.truncate(MAX_WALKTHROUGH_HISTORY);
+        cx.notify();
+
+        let Some(path) = self.history_path.clone() else {
+            return;
+        };
+        let Some(project) = self.project.upgrade() else {
+            return;
+        };
+        let fs = project.read(cx).fs().clone();
+        let entries = self.history.clone();
+        self.save_history_task = Some(cx.background_spawn(async move {
+            history::save_entries(fs.as_ref(), &path, &entries)
+                .await
+                .log_err();
+        }));
     }
 
     pub fn active_step(&self) -> Option<&WalkthroughStep> {
@@ -1282,6 +1542,7 @@ impl WalkthroughStore {
         if self.active.take().is_none() {
             return;
         }
+        self.active_json = None;
         self.active_step_index = 0;
         cx.emit(WalkthroughEvent::Dismissed);
         cx.notify();
@@ -1298,6 +1559,88 @@ pub struct GlobalFlowchartCheck(pub FlowchartCheck);
 
 impl Global for GlobalFlowchartCheck {}
 
+/// What was shown by a successful [`activate_walkthrough`].
+pub struct ShownWalkthrough {
+    pub step_count: usize,
+    pub file_count: usize,
+}
+
+fn validate_walkthrough(
+    json: WalkthroughJson,
+    project: &Entity<Project>,
+    cx: &mut App,
+) -> Task<Result<Walkthrough, Vec<StepError>>> {
+    // Without a UI layer there is no renderer to validate against, and
+    // nothing that would later fail to draw the flowchart.
+    let flowchart_check = cx
+        .try_global::<GlobalFlowchartCheck>()
+        .map(|check| check.0.clone());
+    Walkthrough::from_json(
+        json,
+        project,
+        move |source| match flowchart_check {
+            Some(check) => check(source),
+            None => Ok(()),
+        },
+        cx,
+    )
+}
+
+/// Validates `json` against `project` and, when it is valid, makes it the
+/// project's active walkthrough and records it in the project's history. This
+/// is the one place every walkthrough passes through before it is shown.
+pub fn activate_walkthrough(
+    json: WalkthroughJson,
+    project: &Entity<Project>,
+    cx: &mut App,
+) -> Task<Result<ShownWalkthrough, Vec<StepError>>> {
+    let project = project.clone();
+    let load = validate_walkthrough(json.clone(), &project, cx);
+
+    cx.spawn(async move |cx| {
+        let walkthrough = load.await?;
+        let shown = ShownWalkthrough {
+            step_count: walkthrough.steps.len(),
+            file_count: walkthrough.file_count(),
+        };
+        let store = cx.update(|cx| {
+            let store = WalkthroughStore::for_project(&project, cx);
+            store.update(cx, |store, cx| {
+                store.install_walkthrough(walkthrough, Some(json.clone()), cx)
+            });
+            store
+        });
+
+        let history_loaded = store.update(cx, |store, cx| store.load_history(cx));
+        history_loaded.await;
+        store.update(cx, |store, cx| store.record_history(json, None, cx));
+        Ok(shown)
+    })
+}
+
+fn problems_message(outcome: &str, errors: Vec<StepError>) -> String {
+    let mut message = format!(
+        "The walkthrough was not {outcome}. Fix {} and call the tool again:",
+        if errors.len() == 1 {
+            "this problem".to_string()
+        } else {
+            format!("these {} problems", errors.len())
+        }
+    );
+    for step_error in errors {
+        message.push_str(&format!("\n- {step_error}"));
+    }
+    message
+}
+
+fn counts_message(step_count: usize, file_count: usize) -> String {
+    format!(
+        "{step_count} {} across {file_count} {}",
+        if step_count == 1 { "step" } else { "steps" },
+        if file_count == 1 { "file" } else { "files" },
+    )
+}
+
 /// Validates `json` against `project` and, when it is valid, makes it the
 /// project's active walkthrough. Returns the message to give the calling
 /// agent: a confirmation on success, or every problem found on failure.
@@ -1306,49 +1649,166 @@ pub fn show_walkthrough(
     project: &Entity<Project>,
     cx: &mut App,
 ) -> Task<Result<String, String>> {
-    let project = project.clone();
-    // Without a UI layer there is no renderer to validate against, and
-    // nothing that would later fail to draw the flowchart.
-    let flowchart_check = cx
-        .try_global::<GlobalFlowchartCheck>()
-        .map(|check| check.0.clone());
-    let load = Walkthrough::from_json(
-        json,
-        &project,
-        move |source| match flowchart_check {
-            Some(check) => check(source),
-            None => Ok(()),
-        },
-        cx,
-    );
-
-    cx.spawn(async move |cx| {
-        let walkthrough = load.await.map_err(|errors| {
-            let mut error = format!(
-                "The walkthrough was not shown. Fix {} and call the tool again:",
-                if errors.len() == 1 {
-                    "this problem".to_string()
-                } else {
-                    format!("these {} problems", errors.len())
-                }
-            );
-            for step_error in errors {
-                error.push_str(&format!("\n- {step_error}"));
-            }
-            error
-        })?;
-
-        let step_count = walkthrough.steps.len();
-        let file_count = walkthrough.file_count();
-        cx.update(|cx| {
-            WalkthroughStore::for_project(&project, cx)
-                .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
-        });
-
+    let activate = activate_walkthrough(json, project, cx);
+    cx.spawn(async move |_| {
+        let shown = activate
+            .await
+            .map_err(|errors| problems_message("shown", errors))?;
         Ok(format!(
-            "Walkthrough shown to the user: {step_count} {} across {file_count} {}.",
-            if step_count == 1 { "step" } else { "steps" },
-            if file_count == 1 { "file" } else { "files" },
+            "Walkthrough shown to the user: {}.",
+            counts_message(shown.step_count, shown.file_count)
+        ))
+    })
+}
+
+const NO_ACTIVE_WALKTHROUGH_MESSAGE: &str = "No walkthrough is active in this project.";
+
+/// Describes the project's active walkthrough for an agent: the step the user
+/// is on, then the walkthrough in the format `create_walkthrough` accepts.
+pub fn describe_walkthrough(project: &Entity<Project>, cx: &mut App) -> String {
+    let store = WalkthroughStore::for_project(project, cx);
+    let store = store.read(cx);
+    let (Some(walkthrough), Some(json), Some(step)) =
+        (store.active(), store.active_json(), store.active_step())
+    else {
+        return NO_ACTIVE_WALKTHROUGH_MESSAGE.to_string();
+    };
+    match serde_json::to_string_pretty(json) {
+        Ok(text) => format!(
+            "The user is on step \"{}\" ({} of {}).\n{text}",
+            step.id,
+            store.active_step_index + 1,
+            walkthrough.steps.len(),
+        ),
+        Err(error) => format!("The walkthrough could not be written out: {error}"),
+    }
+}
+
+fn apply_edit(
+    base: &WalkthroughJson,
+    edit: WalkthroughEditJson,
+) -> (WalkthroughJson, Vec<StepError>) {
+    let mut merged = base.clone();
+    let mut errors = Vec::new();
+    if let Some(title) = edit.title {
+        merged.title = title;
+    }
+    if let Some(summary) = edit.summary {
+        merged.summary = summary;
+    }
+    if let Some(flowchart) = edit.flowchart {
+        merged.flowchart = Some(flowchart);
+    }
+    if let Some(example) = edit.example {
+        merged.example = Some(example);
+    }
+    if let Some(legend) = edit.legend {
+        merged.legend = legend;
+    }
+
+    for id in edit.remove_steps {
+        match merged.steps.iter().position(|step| step.id == id) {
+            Some(index) => {
+                merged.steps.remove(index);
+            }
+            None => errors.push(StepError {
+                step: None,
+                kind: StepErrorKind::UnknownRemovedStep { id },
+            }),
+        }
+    }
+
+    for WalkthroughStepEditJson { step, after } in edit.steps {
+        let existing = merged
+            .steps
+            .iter()
+            .position(|candidate| candidate.id == step.id);
+        match (existing, after) {
+            (Some(index), None) => {
+                if let Some(slot) = merged.steps.get_mut(index) {
+                    *slot = step;
+                }
+            }
+            (Some(_), Some(_)) => errors.push(StepError {
+                step: Some(step.id),
+                kind: StepErrorKind::AfterOnExistingStep,
+            }),
+            (None, None) => merged.steps.push(step),
+            (None, Some(after)) => {
+                match merged
+                    .steps
+                    .iter()
+                    .position(|candidate| candidate.id == after)
+                {
+                    Some(index) => merged.steps.insert(index + 1, step),
+                    None => errors.push(StepError {
+                        step: Some(step.id),
+                        kind: StepErrorKind::UnknownAfterStep { after },
+                    }),
+                }
+            }
+        }
+    }
+    (merged, errors)
+}
+
+/// Applies `edit` to the project's active walkthrough in place. The edited
+/// walkthrough goes through the same validation as a new one, and on any
+/// problem nothing changes. Returns the message to give the calling agent.
+pub fn edit_walkthrough(
+    edit: WalkthroughEditJson,
+    project: &Entity<Project>,
+    cx: &mut App,
+) -> Task<Result<String, String>> {
+    let store = WalkthroughStore::for_project(project, cx);
+    let Some(base) = store.read(cx).active_json().cloned() else {
+        return Task::ready(Err(
+            "No walkthrough is active. Use create_walkthrough first.".to_string(),
+        ));
+    };
+    if edit.is_empty() {
+        return Task::ready(Err(
+            "The walkthrough was not changed: the edit sets no field. Give at least one of title, summary, flowchart, example, legend, steps or remove_steps.".to_string(),
+        ));
+    }
+
+    let (merged, edit_errors) = apply_edit(&base, edit);
+    let validate = validate_walkthrough(merged.clone(), project, cx);
+    let project = project.clone();
+    cx.spawn(async move |cx| {
+        let walkthrough = match validate.await {
+            Ok(walkthrough) if edit_errors.is_empty() => walkthrough,
+            outcome => {
+                let mut errors = edit_errors;
+                if let Err(validation_errors) = outcome {
+                    errors.extend(validation_errors);
+                }
+                return Err(problems_message("changed", errors));
+            }
+        };
+        let step_ids = walkthrough
+            .steps
+            .iter()
+            .map(|step| step.id.to_string())
+            .collect::<Vec<_>>();
+        let counts = counts_message(walkthrough.steps.len(), walkthrough.file_count());
+
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        let replaced = store.update(cx, |store, cx| {
+            store.replace_walkthrough(walkthrough, merged.clone(), &base, cx)
+        });
+        if !replaced {
+            return Err("The walkthrough was not changed: it was replaced or dismissed while this edit was being checked. Call get_walkthrough and try again.".to_string());
+        }
+
+        let history_loaded = store.update(cx, |store, cx| store.load_history(cx));
+        history_loaded.await;
+        store.update(cx, |store, cx| {
+            store.record_history(merged, Some(&base), cx)
+        });
+        Ok(format!(
+            "Walkthrough updated: {counts}. Step order: {}",
+            step_ids.join(", ")
         ))
     })
 }
@@ -1364,10 +1824,17 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
     use util::path;
 
+    struct HistoryDirectoryGuard(#[allow(dead_code)] tempfile::TempDir);
+
+    impl Global for HistoryDirectoryGuard {}
+
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
+            let directory = tempfile::tempdir().expect("creating a history directory");
+            set_history_directory(directory.path().to_path_buf(), cx);
+            cx.set_global(HistoryDirectoryGuard(directory));
         });
     }
 
@@ -2294,5 +2761,510 @@ mod tests {
             Ok("Walkthrough shown to the user: 2 steps across 2 files.")
         );
         assert!(store.read_with(cx, |store, _| store.active().is_some()));
+    }
+
+    fn titled(title: &str) -> WalkthroughJson {
+        let mut json = walkthrough_json(vec![step("a", "root/src/one.rs", 1, 2)]);
+        json.title = title.to_string();
+        json
+    }
+
+    async fn show(
+        json: &WalkthroughJson,
+        project: &Entity<Project>,
+        cx: &mut TestAppContext,
+    ) -> Result<String, String> {
+        let shown = cx
+            .update(|cx| show_walkthrough(json.clone(), project, cx))
+            .await;
+        cx.run_until_parked();
+        shown
+    }
+
+    fn history_titles(project: &Entity<Project>, cx: &mut TestAppContext) -> Vec<String> {
+        let store = cx.update(|cx| WalkthroughStore::for_project(project, cx));
+        store.read_with(cx, |store, _| {
+            store
+                .history()
+                .iter()
+                .map(|entry| entry.walkthrough.title.clone())
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn test_history_is_newest_first_without_duplicates(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let first = titled("First");
+        let second = titled("Second");
+        show(&first, &project, cx).await.expect("first is valid");
+        show(&second, &project, cx).await.expect("second is valid");
+        assert_eq!(history_titles(&project, cx), ["Second", "First"]);
+
+        show(&first, &project, cx).await.expect("first is valid");
+        assert_eq!(history_titles(&project, cx), ["First", "Second"]);
+    }
+
+    #[gpui::test]
+    async fn test_history_is_capped(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        for number in 0..MAX_WALKTHROUGH_HISTORY + 2 {
+            show(&titled(&format!("Walkthrough {number}")), &project, cx)
+                .await
+                .expect("walkthrough is valid");
+        }
+        let titles = history_titles(&project, cx);
+        assert_eq!(titles.len(), MAX_WALKTHROUGH_HISTORY);
+        assert_eq!(titles.first().map(String::as_str), Some("Walkthrough 11"));
+        assert_eq!(titles.last().map(String::as_str), Some("Walkthrough 2"));
+    }
+
+    #[gpui::test]
+    async fn test_invalid_walkthrough_is_not_recorded(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let mut invalid = titled("Invalid");
+        invalid.steps[0].path = "root/src/missing.rs".to_string();
+        show(&invalid, &project, cx)
+            .await
+            .expect_err("a missing file is invalid");
+        assert!(history_titles(&project, cx).is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_history_is_read_back_by_a_fresh_project(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({ "src": { "one.rs": numbered_lines(10) } }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        show(&titled("Older"), &project, cx).await.expect("valid");
+        show(&titled("Newer"), &project, cx).await.expect("valid");
+
+        let other_roots = Project::test(fs.clone(), [path!("/root/src").as_ref()], cx).await;
+        let other_store = cx.update(|cx| WalkthroughStore::for_project(&other_roots, cx));
+        cx.update(|cx| other_store.update(cx, |store, cx| store.load_history(cx)))
+            .await;
+        assert!(history_titles(&other_roots, cx).is_empty());
+
+        let fresh = Project::test(fs, [path!("/root").as_ref()], cx).await;
+        let fresh_store = cx.update(|cx| WalkthroughStore::for_project(&fresh, cx));
+        assert!(fresh_store.read_with(cx, |store, _| store.history().is_empty()));
+        cx.update(|cx| fresh_store.update(cx, |store, cx| store.load_history(cx)))
+            .await;
+        assert_eq!(history_titles(&fresh, cx), ["Newer", "Older"]);
+    }
+
+    fn three_step_json() -> WalkthroughJson {
+        walkthrough_json(vec![
+            step("a", "root/src/one.rs", 1, 2),
+            step("b", "root/src/two.rs", 3, 5),
+            step("c", "root/src/one.rs", 10, 12),
+        ])
+    }
+
+    fn edit_step(
+        id: &str,
+        start_line: u32,
+        end_line: u32,
+        after: Option<&str>,
+    ) -> WalkthroughStepEditJson {
+        WalkthroughStepEditJson {
+            step: step(id, "root/src/one.rs", start_line, end_line),
+            after: after.map(str::to_string),
+        }
+    }
+
+    async fn edit(
+        edit: WalkthroughEditJson,
+        project: &Entity<Project>,
+        cx: &mut TestAppContext,
+    ) -> Result<String, String> {
+        let result = cx.update(|cx| edit_walkthrough(edit, project, cx)).await;
+        cx.run_until_parked();
+        result
+    }
+
+    fn active_ids(store: &Entity<WalkthroughStore>, cx: &mut TestAppContext) -> Vec<String> {
+        store.read_with(cx, |store, _| {
+            store
+                .active()
+                .map(|walkthrough| {
+                    walkthrough
+                        .steps
+                        .iter()
+                        .map(|step| step.id.to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    fn history_jsons(
+        store: &Entity<WalkthroughStore>,
+        cx: &mut TestAppContext,
+    ) -> Vec<HistoryEntry> {
+        store.read_with(cx, |store, _| store.history().to_vec())
+    }
+
+    #[gpui::test]
+    async fn test_edit_replaces_a_step_in_place_and_keeps_the_current_step(
+        cx: &mut TestAppContext,
+    ) {
+        let project = test_project(cx).await;
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        store.update(cx, |store, cx| store.set_active_step(&StepId::new("b"), cx));
+        let events = record_events(&store, cx);
+
+        let mut replacement = edit_step("a", 1, 2, None);
+        replacement.step.comment = "A better comment".to_string();
+        let message = edit(
+            WalkthroughEditJson {
+                steps: vec![replacement],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            message.as_deref(),
+            Ok("Walkthrough updated: 3 steps across 2 files. Step order: a, b, c")
+        );
+
+        assert_eq!(active_ids(&store, cx), ["a", "b", "c"]);
+        store.read_with(cx, |store, _| {
+            let walkthrough = store.active().expect("active");
+            assert_eq!(walkthrough.steps[0].comment.as_ref(), "A better comment");
+            assert_eq!(store.active_step().map(|step| step.id.as_str()), Some("b"));
+            let json = store.active_json().expect("json");
+            assert_eq!(json.steps[0].comment, "A better comment");
+        });
+        let events = events.borrow();
+        assert!(matches!(
+            events.as_slice(),
+            [WalkthroughEvent::Updated {
+                active_step_moved: false,
+                flowchart_added: false,
+                ..
+            }]
+        ));
+    }
+
+    #[gpui::test]
+    async fn test_edit_inserts_appends_and_removes_steps(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+
+        let message = edit(
+            WalkthroughEditJson {
+                steps: vec![
+                    edit_step("after-a", 20, 21, Some("a")),
+                    edit_step("after-after-a", 30, 31, Some("after-a")),
+                    edit_step("last", 40, 41, None),
+                ],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            message.as_deref(),
+            Ok(
+                "Walkthrough updated: 6 steps across 2 files. Step order: a, after-a, after-after-a, b, c, last"
+            )
+        );
+        assert_eq!(
+            active_ids(&store, cx),
+            ["a", "after-a", "after-after-a", "b", "c", "last"]
+        );
+
+        let message = edit(
+            WalkthroughEditJson {
+                remove_steps: vec!["b".to_string(), "last".to_string()],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            message.as_deref(),
+            Ok(
+                "Walkthrough updated: 4 steps across 1 file. Step order: a, after-a, after-after-a, c"
+            )
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_replaces_title_legend_and_other_fields(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let mut json = three_step_json();
+        json.steps[0].color = Some(HighlightColor::Blue);
+        json.legend = legend(&[HighlightColor::Blue]);
+        show(&json, &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+
+        edit(
+            WalkthroughEditJson {
+                title: Some("New title".to_string()),
+                summary: Some("New summary".to_string()),
+                example: Some("An example".to_string()),
+                flowchart: Some("flowchart TD\n  a --> b".to_string()),
+                legend: Some(vec![
+                    LegendEntryJson {
+                        color: HighlightColor::Blue,
+                        label: "Entry".to_string(),
+                    },
+                    LegendEntryJson {
+                        color: HighlightColor::Red,
+                        label: "Error".to_string(),
+                    },
+                ]),
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await
+        .expect("edit is valid");
+
+        store.read_with(cx, |store, _| {
+            let walkthrough = store.active().expect("active");
+            assert_eq!(walkthrough.title.as_ref(), "New title");
+            assert_eq!(walkthrough.summary.as_ref(), "New summary");
+            assert_eq!(walkthrough.example.as_deref(), Some("An example"));
+            assert_eq!(walkthrough.legend.len(), 2);
+            assert_eq!(
+                walkthrough
+                    .flowchart
+                    .as_ref()
+                    .map(|flowchart| flowchart.node_ids.len()),
+                Some(2)
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_edit_removing_the_current_step_moves_to_the_clamped_index(
+        cx: &mut TestAppContext,
+    ) {
+        let project = test_project(cx).await;
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        store.update(cx, |store, cx| store.set_active_step(&StepId::new("c"), cx));
+        let events = record_events(&store, cx);
+
+        edit(
+            WalkthroughEditJson {
+                remove_steps: vec!["c".to_string()],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await
+        .expect("edit is valid");
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.active_step().map(|step| step.id.as_str()), Some("b"));
+            assert_eq!(store.active_step_index(), Some(1));
+        });
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [WalkthroughEvent::Updated {
+                active_step_moved: true,
+                ..
+            }]
+        ));
+
+        store.update(cx, |store, cx| store.set_active_step(&StepId::new("a"), cx));
+        edit(
+            WalkthroughEditJson {
+                remove_steps: vec!["a".to_string()],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await
+        .expect("edit is valid");
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.active_step().map(|step| step.id.as_str()), Some("b"));
+            assert_eq!(store.active_step_index(), Some(0));
+        });
+    }
+
+    #[gpui::test]
+    async fn test_failed_edit_changes_nothing(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        store.update(cx, |store, cx| store.set_active_step(&StepId::new("b"), cx));
+        let json_before = store.read_with(cx, |store, _| store.active_json().cloned());
+        let history_before = history_jsons(&store, cx);
+        let events = record_events(&store, cx);
+
+        let mut broken = edit_step("broken", 1, 200, None);
+        broken.step.node = Some("nowhere".to_string());
+        let error = edit(
+            WalkthroughEditJson {
+                steps: vec![
+                    edit_step("new", 5, 6, Some("missing")),
+                    edit_step("a", 1, 2, Some("b")),
+                    broken,
+                ],
+                remove_steps: vec!["gone".to_string()],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            error.as_ref().map_err(String::as_str),
+            Err(indoc! {"
+                The walkthrough was not changed. Fix these 5 problems and call the tool again:
+                - `remove_steps` lists `gone`, which is not a step id in the walkthrough
+                - Step `new`: `after` is `missing`, which is not a step id in the walkthrough
+                - Step `a`: this id already exists, so the step is replaced in place; leave out `after`
+                - Step `broken`: lines 1-200 are not a valid range in a file with 101 lines (lines are 1-based and inclusive)
+                - Step `broken`: `nowhere` is not a node id in the flowchart"}
+            .trim_end())
+        );
+
+        assert_eq!(
+            store.read_with(cx, |store, _| store.active_json().cloned()),
+            json_before
+        );
+        assert_eq!(active_ids(&store, cx), ["a", "b", "c"]);
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.active_step().map(|step| step.id.as_str()), Some("b"));
+        });
+        assert_eq!(history_jsons(&store, cx), history_before);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_edit_removing_every_step_is_rejected(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        show(&titled("Only"), &project, cx).await.expect("valid");
+        let error = edit(
+            WalkthroughEditJson {
+                remove_steps: vec!["a".to_string()],
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            error.as_ref().map_err(String::as_str),
+            Err(indoc! {"
+                The walkthrough was not changed. Fix this problem and call the tool again:
+                - a walkthrough needs between 1 and 30 steps, but 0 were given"}
+            .trim_end())
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_without_changes_or_walkthrough_is_an_error(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let error = edit(
+            WalkthroughEditJson {
+                title: Some("Title".to_string()),
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await;
+        assert_eq!(
+            error.as_ref().map_err(String::as_str),
+            Err("No walkthrough is active. Use create_walkthrough first.")
+        );
+
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let error = edit(WalkthroughEditJson::default(), &project, cx).await;
+        assert!(
+            error.as_ref().is_err_and(|error| error
+                .starts_with("The walkthrough was not changed: the edit sets no field")),
+            "{error:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_edit_replaces_the_history_entry_it_was_made_from(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        show(&titled("Other"), &project, cx).await.expect("valid");
+        show(&three_step_json(), &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        assert_eq!(history_titles(&project, cx), ["Title", "Other"]);
+
+        edit(
+            WalkthroughEditJson {
+                title: Some("Edited".to_string()),
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await
+        .expect("edit is valid");
+        assert_eq!(history_titles(&project, cx), ["Edited", "Other"]);
+
+        edit(
+            WalkthroughEditJson {
+                title: Some("Edited twice".to_string()),
+                ..Default::default()
+            },
+            &project,
+            cx,
+        )
+        .await
+        .expect("edit is valid");
+        let entries = history_jsons(&store, cx);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.walkthrough.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Edited twice", "Other"]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_describe_walkthrough_round_trips(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        assert_eq!(
+            cx.update(|cx| describe_walkthrough(&project, cx)),
+            "No walkthrough is active in this project."
+        );
+
+        let mut json = three_step_json();
+        json.steps[1].highlights = vec![highlight(3, 3, Some("second"), HighlightColor::Red)];
+        json.steps[1].color = Some(HighlightColor::Blue);
+        json.legend = legend(&[HighlightColor::Blue, HighlightColor::Red]);
+        json.example = Some("An example".to_string());
+        json.steps[0].data = vec![data("count", "2")];
+        show(&json, &project, cx).await.expect("valid");
+        let store = cx.update(|cx| WalkthroughStore::for_project(&project, cx));
+        store.update(cx, |store, cx| store.set_active_step(&StepId::new("c"), cx));
+
+        let description = cx.update(|cx| describe_walkthrough(&project, cx));
+        let (first_line, rest) = description.split_once('\n').expect("two parts");
+        assert_eq!(first_line, "The user is on step \"c\" (3 of 3).");
+        let parsed: WalkthroughJson = serde_json::from_str(rest).expect("JSON should parse");
+        assert_eq!(parsed, json);
+
+        store.update(cx, |store, cx| store.dismiss(cx));
+        assert_eq!(
+            cx.update(|cx| describe_walkthrough(&project, cx)),
+            "No walkthrough is active in this project."
+        );
     }
 }

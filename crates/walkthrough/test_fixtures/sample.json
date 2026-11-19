@@ -23,8 +23,8 @@
     {
       "id": "validate",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 506,
-      "end_line": 532,
+      "start_line": 616,
+      "end_line": 642,
       "anchor_text": "pub fn from_json(",
       "title": "Validation collects every problem",
       "comment": "Errors are pushed onto the error list (highlighted) instead of returning early, so the agent can fix everything in a single retry. The step count and duplicate ids are checked before any file is opened.",
@@ -32,8 +32,8 @@
       "color": "green",
       "highlights": [
         {
-          "start_line": 506,
-          "end_line": 532,
+          "start_line": 616,
+          "end_line": 642,
           "text": "let mut errors = Vec::new();",
           "color": "yellow"
         }
@@ -48,18 +48,18 @@
     {
       "id": "errors",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 1326,
-      "end_line": 1339,
-      "anchor_text": "let walkthrough = load.await.map_err(|errors| {",
+      "start_line": 1621,
+      "end_line": 1634,
+      "anchor_text": "fn problems_message(",
       "title": "Errors go back to the agent together",
       "comment": "On failure nothing is shown to the user. The message returned to the agent lists each problem on its own line, phrased so the model can act on it.",
       "node": "errors",
       "color": "green",
       "highlights": [
         {
-          "start_line": 1326,
-          "end_line": 1326,
-          "text": "map_err(|errors|",
+          "start_line": 1625,
+          "end_line": 1625,
+          "text": "this problem",
           "color": "yellow"
         }
       ],
@@ -73,8 +73,8 @@
     {
       "id": "anchor",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 868,
-      "end_line": 887,
+      "start_line": 978,
+      "end_line": 997,
       "anchor_text": "fn resolve_step_rows(",
       "title": "Line numbers become anchors",
       "comment": "The agent's 1-based line numbers are checked against the buffer as it is *now*. Further down, `anchor_text` rescues ranges that are off by a few lines, and the result is stored as anchors so it follows later edits.",
@@ -90,9 +90,9 @@
     {
       "id": "store",
       "path": "crates/walkthrough/src/walkthrough.rs",
-      "start_line": 1211,
-      "end_line": 1218,
-      "anchor_text": "pub fn set_walkthrough(",
+      "start_line": 1338,
+      "end_line": 1352,
+      "anchor_text": "fn install_walkthrough(",
       "title": "The store takes ownership",
       "comment": "One store per project holds the active walkthrough. Setting it mints the id, activates the first step and emits `Created`. Every UI piece reacts to that event; none of them call each other.",
       "node": "store",
@@ -107,8 +107,8 @@
     {
       "id": "editor",
       "path": "crates/walkthrough_ui/src/editor_addon.rs",
-      "start_line": 169,
-      "end_line": 182,
+      "start_line": 172,
+      "end_line": 191,
       "anchor_text": "fn refresh_annotations(",
       "title": "Editors annotate themselves",
       "comment": "Each singleton editor has an addon subscribed to the store. On `Created` or `Dismissed` it first removes the blocks it added, then inserts a comment block below every step in its buffer. Nothing is written to the buffer.",
@@ -128,8 +128,8 @@
     {
       "id": "reveal",
       "path": "crates/walkthrough_ui/src/navigation.rs",
-      "start_line": 146,
-      "end_line": 183,
+      "start_line": 156,
+      "end_line": 193,
       "anchor_text": "fn reveal_active_step(",
       "title": "Navigation brings the step into view",
       "comment": "A single subscriber opens the step's file in a code pane, puts the cursor at the start of the range without selecting it, and scrolls so the range comes first. Next, previous and flowchart clicks all end up here.",
@@ -145,8 +145,8 @@
     {
       "id": "flowchart",
       "path": "crates/walkthrough_ui/src/flowchart_view.rs",
-      "start_line": 521,
-      "end_line": 536,
+      "start_line": 536,
+      "end_line": 551,
       "anchor_text": "fn refresh(&mut self, cx: &mut Context<Self>) {",
       "title": "The flowchart follows the active step",
       "comment": "The view appends a `style` line for the active step's node and renders that source. Rendered diagrams are cached by source, so going back to a step is instant.",
@@ -156,8 +156,8 @@
     {
       "id": "click",
       "path": "crates/walkthrough_ui/src/flowchart_view.rs",
-      "start_line": 375,
-      "end_line": 395,
+      "start_line": 388,
+      "end_line": 408,
       "anchor_text": "pub(crate) fn node_at(",
       "title": "Clicks map back to nodes",
       "comment": "The diagram is painted as a bitmap, so a click is scaled from view coordinates into the SVG's coordinates and tested against the node rectangles read from the renderer's output.",

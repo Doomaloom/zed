@@ -120,8 +120,8 @@ impl FeatureFlag for SandboxingFeatureFlag {
 }
 register_feature_flag!(SandboxingFeatureFlag);
 
-/// Gates code walkthroughs: the `create_walkthrough` agent tool and the
-/// `walkthrough::*` actions.
+/// Gates code walkthroughs: the `create_walkthrough`, `get_walkthrough` and
+/// `edit_walkthrough` agent tools and the `walkthrough::*` actions.
 pub struct WalkthroughFeatureFlag;
 
 impl FeatureFlag for WalkthroughFeatureFlag {

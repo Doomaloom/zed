@@ -54,6 +54,19 @@ pub fn init(cx: &mut App) {
                         FlowchartView::open(workspace, window, cx);
                     }
                 }
+                WalkthroughEvent::Updated {
+                    flowchart_added, ..
+                } => {
+                    let has_flowchart = store
+                        .read(cx)
+                        .active()
+                        .is_some_and(|walkthrough| walkthrough.flowchart.is_some());
+                    if !has_flowchart {
+                        FlowchartView::close(workspace, window, cx);
+                    } else if *flowchart_added {
+                        FlowchartView::open(workspace, window, cx);
+                    }
+                }
                 WalkthroughEvent::Dismissed => FlowchartView::close(workspace, window, cx),
                 WalkthroughEvent::ActiveStepChanged { .. } => {}
             },
@@ -425,7 +438,9 @@ impl FlowchartView {
             cx.subscribe(&store, |this, _, event, cx| {
                 if matches!(
                     event,
-                    WalkthroughEvent::Created(_) | WalkthroughEvent::Dismissed
+                    WalkthroughEvent::Created(_)
+                        | WalkthroughEvent::Updated { .. }
+                        | WalkthroughEvent::Dismissed
                 ) {
                     this.reset(cx);
                 }

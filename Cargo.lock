@@ -19844,6 +19844,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2",
  "tempfile",
  "util",
 ]
@@ -19854,6 +19855,7 @@ version = "0.1.0"
 dependencies = [
  "agent",
  "anyhow",
+ "chrono",
  "collections",
  "command_palette_hooks",
  "editor",
@@ -19862,7 +19864,9 @@ dependencies = [
  "indoc",
  "language",
  "markdown",
+ "menu",
  "mermaid_render",
+ "picker",
  "project",
  "quick-xml 0.41.0",
  "serde_json",

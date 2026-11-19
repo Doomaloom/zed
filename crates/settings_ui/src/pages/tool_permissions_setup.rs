@@ -1428,6 +1428,8 @@ mod tests {
             "spawn_agent",
             // Reads files and changes only UI state, so it never prompts.
             "create_walkthrough",
+            "edit_walkthrough",
+            "get_walkthrough",
         ];
 
         let tool_info_ids: Vec<&str> = TOOLS.iter().map(|t| t.id).collect();

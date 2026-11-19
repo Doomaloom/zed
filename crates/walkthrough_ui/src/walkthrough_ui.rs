@@ -1,6 +1,7 @@
 mod editor_addon;
 mod flowchart_view;
 mod navigation;
+mod reopen_picker;
 
 use feature_flags::{FeatureFlagViewExt as _, WalkthroughFeatureFlag};
 use gpui::App;
@@ -54,6 +55,16 @@ pub(crate) mod test_support {
 
     impl gpui::Global for RegistryDirectoryGuard {}
 
+    pub struct HistoryDirectoryGuard(#[allow(dead_code)] pub tempfile::TempDir);
+
+    impl gpui::Global for HistoryDirectoryGuard {}
+
+    pub fn isolate_history(cx: &mut gpui::App) {
+        let history_directory = tempfile::tempdir().expect("creating a history directory");
+        walkthrough::set_history_directory(history_directory.path().to_path_buf(), cx);
+        cx.set_global(HistoryDirectoryGuard(history_directory));
+    }
+
     pub struct TestWorkspace {
         pub project: Entity<Project>,
         pub workspace: Entity<Workspace>,
@@ -78,6 +89,7 @@ pub(crate) mod test_support {
                 cx,
             );
             cx.set_global(RegistryDirectoryGuard(registry_directory));
+            isolate_history(cx);
             crate::init(cx);
             app_state
         });
@@ -255,6 +267,7 @@ mod tests {
             let app_state = AppState::test(cx);
             command_palette_hooks::init(cx);
             editor::init(cx);
+            crate::test_support::isolate_history(cx);
             crate::init(cx);
             app_state
         });

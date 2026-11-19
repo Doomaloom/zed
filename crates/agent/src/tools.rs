@@ -9,12 +9,14 @@ mod delete_path_tool;
 mod diagnostics_tool;
 mod edit_file_tool;
 mod edit_session;
+mod edit_walkthrough_tool;
 #[cfg(all(test, feature = "unit-eval"))]
 mod evals;
 mod fetch_tool;
 mod find_path_tool;
 mod find_references_tool;
 mod get_code_actions_tool;
+mod get_walkthrough_tool;
 mod go_to_definition_tool;
 mod grep_tool;
 mod list_agents_and_models_tool;
@@ -82,10 +84,12 @@ pub use create_walkthrough_tool::*;
 pub use delete_path_tool::*;
 pub use diagnostics_tool::*;
 pub use edit_file_tool::*;
+pub use edit_walkthrough_tool::*;
 pub use fetch_tool::*;
 pub use find_path_tool::*;
 pub use find_references_tool::*;
 pub use get_code_actions_tool::*;
+pub use get_walkthrough_tool::*;
 pub use go_to_definition_tool::*;
 pub use grep_tool::*;
 pub use list_agents_and_models_tool::*;
@@ -209,10 +213,12 @@ tools! {
     DeletePathTool,
     DiagnosticsTool,
     EditFileTool,
+    EditWalkthroughTool,
     FetchTool,
     FindPathTool,
     FindReferencesTool,
     GetCodeActionsTool,
+    GetWalkthroughTool,
     GoToDefinitionTool,
     GrepTool,
     ListAgentsAndModelsTool,
@@ -242,7 +248,9 @@ pub fn tool_feature_flag_enabled(tool_name: &str, cx: &App) -> bool {
         | ApplyCodeActionTool::NAME
         | GoToDefinitionTool::NAME => cx.has_flag::<LspToolFeatureFlag>(),
         CreateThreadTool::NAME => cx.has_flag::<CreateThreadToolFeatureFlag>(),
-        CreateWalkthroughTool::NAME => cx.has_flag::<WalkthroughFeatureFlag>(),
+        CreateWalkthroughTool::NAME | EditWalkthroughTool::NAME | GetWalkthroughTool::NAME => {
+            cx.has_flag::<WalkthroughFeatureFlag>()
+        }
         _ => true,
     }
 }

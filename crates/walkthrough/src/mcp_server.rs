@@ -71,6 +71,85 @@ impl McpServerTool for CreateWalkthroughMcpTool {
     }
 }
 
+#[derive(Clone)]
+struct GetWalkthroughMcpTool {
+    project: WeakEntity<Project>,
+}
+
+impl McpServerTool for GetWalkthroughMcpTool {
+    type Input = crate::GetWalkthroughJson;
+    type Output = ();
+
+    const NAME: &'static str = "get_walkthrough";
+
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations {
+            title: Some("Get walkthrough".into()),
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(false),
+        }
+    }
+
+    async fn run(
+        &self,
+        _input: Self::Input,
+        cx: &mut AsyncApp,
+    ) -> Result<ToolResponse<Self::Output>> {
+        let project = self
+            .project
+            .upgrade()
+            .context("the project is no longer open")?;
+        let text = cx.update(|cx| crate::describe_walkthrough(&project, cx));
+        Ok(ToolResponse {
+            content: vec![ToolResponseContent::Text { text }],
+            structured_content: (),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct EditWalkthroughMcpTool {
+    project: WeakEntity<Project>,
+}
+
+impl McpServerTool for EditWalkthroughMcpTool {
+    type Input = crate::WalkthroughEditJson;
+    type Output = ();
+
+    const NAME: &'static str = "edit_walkthrough";
+
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations {
+            title: Some("Edit walkthrough".into()),
+            read_only_hint: None,
+            destructive_hint: Some(false),
+            idempotent_hint: None,
+            open_world_hint: Some(false),
+        }
+    }
+
+    async fn run(
+        &self,
+        input: Self::Input,
+        cx: &mut AsyncApp,
+    ) -> Result<ToolResponse<Self::Output>> {
+        let project = self
+            .project
+            .upgrade()
+            .context("the project is no longer open")?;
+        let edited = cx.update(|cx| crate::edit_walkthrough(input, &project, cx));
+        match edited.await {
+            Ok(message) => Ok(ToolResponse {
+                content: vec![ToolResponseContent::Text { text: message }],
+                structured_content: (),
+            }),
+            Err(error) => Err(anyhow!(error)),
+        }
+    }
+}
+
 /// What a standalone `zed --mcp` process needs to know about a running server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryEntry {
@@ -247,7 +326,13 @@ fn start_server(
     let path = std::env::current_exe().context("finding the Zed executable path")?;
     let mut server = McpServer::new(cx)?;
     server.handle_request::<requests::Initialize>(handle_initialize);
-    server.add_tool(CreateWalkthroughMcpTool { project });
+    server.add_tool(CreateWalkthroughMcpTool {
+        project: project.clone(),
+    });
+    server.add_tool(GetWalkthroughMcpTool {
+        project: project.clone(),
+    });
+    server.add_tool(EditWalkthroughMcpTool { project });
     let args = vec![
         "--nc".to_string(),
         server.socket_path().display().to_string(),
@@ -351,9 +436,17 @@ fn respond_to_message(
             }
         }
         "tools/list" => serde_json::to_value(ListToolsResponse {
-            tools: vec![tool_definition(&CreateWalkthroughMcpTool {
-                project: WeakEntity::new_invalid(),
-            })],
+            tools: vec![
+                tool_definition(&CreateWalkthroughMcpTool {
+                    project: WeakEntity::new_invalid(),
+                }),
+                tool_definition(&GetWalkthroughMcpTool {
+                    project: WeakEntity::new_invalid(),
+                }),
+                tool_definition(&EditWalkthroughMcpTool {
+                    project: WeakEntity::new_invalid(),
+                }),
+            ],
             next_cursor: None,
             meta: None,
         }),
@@ -590,6 +683,83 @@ mod tests {
         });
     }
 
+    fn response_text(response: ToolResponse<()>) -> String {
+        let [ToolResponseContent::Text { text }] = response.content.as_slice() else {
+            panic!("expected a single text item, got {:?}", response.content);
+        };
+        text.clone()
+    }
+
+    #[gpui::test]
+    async fn test_get_and_edit_walkthrough_tools(cx: &mut TestAppContext) {
+        let project = test_project(cx).await;
+        let get_tool = GetWalkthroughMcpTool {
+            project: project.downgrade(),
+        };
+        let edit_tool = EditWalkthroughMcpTool {
+            project: project.downgrade(),
+        };
+
+        let text = response_text(
+            get_tool
+                .run(crate::GetWalkthroughJson {}, &mut cx.to_async())
+                .await
+                .expect("tool call succeeds"),
+        );
+        assert_eq!(text, "No walkthrough is active in this project.");
+
+        let error = edit_tool
+            .run(
+                crate::WalkthroughEditJson {
+                    title: Some("New".to_string()),
+                    ..Default::default()
+                },
+                &mut cx.to_async(),
+            )
+            .await
+            .expect_err("nothing to edit");
+        assert_eq!(
+            error.to_string(),
+            "No walkthrough is active. Use create_walkthrough first."
+        );
+
+        CreateWalkthroughMcpTool {
+            project: project.downgrade(),
+        }
+        .run(tool_input("root/src/one.rs"), &mut cx.to_async())
+        .await
+        .expect("tool call succeeds");
+
+        let message = response_text(
+            edit_tool
+                .run(
+                    crate::WalkthroughEditJson {
+                        title: Some("New".to_string()),
+                        ..Default::default()
+                    },
+                    &mut cx.to_async(),
+                )
+                .await
+                .expect("edit succeeds"),
+        );
+        assert_eq!(
+            message,
+            "Walkthrough updated: 1 step across 1 file. Step order: a"
+        );
+
+        let text = response_text(
+            get_tool
+                .run(crate::GetWalkthroughJson {}, &mut cx.to_async())
+                .await
+                .expect("tool call succeeds"),
+        );
+        assert!(
+            text.starts_with("The user is on step \"a\" (1 of 1).\n{"),
+            "unexpected message: {text}"
+        );
+        assert!(text.contains("\"title\": \"New\""), "{text}");
+    }
+
     #[gpui::test]
     async fn test_server_lists_tool_over_socket(cx: &mut TestAppContext) {
         use futures::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, io::BufReader};
@@ -636,11 +806,20 @@ mod tests {
         );
 
         let tools = request(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).await;
+        let listed = tools["result"]["tools"]
+            .as_array()
+            .expect("a tool list")
+            .iter()
+            .map(|tool| {
+                assert!(tool["description"].is_string(), "no description in {tool}");
+                tool["name"].as_str().expect("a tool name").to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            tools["result"]["tools"][0]["name"], "create_walkthrough",
+            listed.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["create_walkthrough", "edit_walkthrough", "get_walkthrough"],
             "unexpected tools/list response: {tools}"
         );
-        assert!(tools["result"]["tools"][0]["description"].is_string());
     }
 
     #[gpui::test]
@@ -732,9 +911,32 @@ mod tests {
         assert_eq!(initialized["result"]["serverInfo"]["name"], "zed");
         assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(tools["id"], "two");
-        assert_eq!(tools["result"]["tools"][0]["name"], "create_walkthrough");
-        assert!(tools["result"]["tools"][0]["description"].is_string());
-        assert!(tools["result"]["tools"][0]["inputSchema"]["properties"]["steps"].is_object());
+        let listed = tools["result"]["tools"]
+            .as_array()
+            .expect("a tool list")
+            .iter()
+            .map(|tool| (tool["name"].as_str().unwrap_or_default().to_string(), tool))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            listed.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["create_walkthrough", "edit_walkthrough", "get_walkthrough"]
+        );
+        for tool in listed.values() {
+            assert!(tool["description"].is_string());
+        }
+        assert!(listed["create_walkthrough"]["inputSchema"]["properties"]["steps"].is_object());
+        assert!(
+            listed["edit_walkthrough"]["inputSchema"]["properties"]["remove_steps"].is_object()
+        );
+        assert!(
+            listed["edit_walkthrough"]["inputSchema"]["properties"]["steps"]["items"]["properties"]
+                ["after"]
+                .is_object()
+        );
+        assert_eq!(
+            listed["get_walkthrough"]["annotations"]["readOnlyHint"],
+            true
+        );
         assert_eq!(ping["result"], json!({}));
         assert_eq!(unknown["error"]["code"], -32601);
         assert_eq!(call["id"], 5);

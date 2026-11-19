@@ -147,8 +147,9 @@ fn register_editor(editor: &mut Editor, cx: &mut Context<Editor>) {
     let subscriptions = vec![
         cx.subscribe(&store, |editor, _, event, cx| match event {
             WalkthroughEvent::Created(_) | WalkthroughEvent::Dismissed => {
-                refresh_annotations(editor, cx)
+                refresh_annotations(editor, false, cx)
             }
+            WalkthroughEvent::Updated { .. } => refresh_annotations(editor, true, cx),
             WalkthroughEvent::ActiveStepChanged { .. } => refresh_highlights(editor, cx),
         }),
         cx.subscribe_self(|editor, event: &EditorEvent, cx| {
@@ -163,15 +164,23 @@ fn register_editor(editor: &mut Editor, cx: &mut Context<Editor>) {
         blocks: Vec::new(),
         _subscriptions: subscriptions,
     });
-    refresh_annotations(editor, cx);
+    refresh_annotations(editor, false, cx);
 }
 
-fn refresh_annotations(editor: &mut Editor, cx: &mut Context<Editor>) {
+/// Rebuilds the comment blocks. `keep_collapsed` carries over which blocks
+/// the user collapsed, for a walkthrough that was edited in place.
+fn refresh_annotations(editor: &mut Editor, keep_collapsed: bool, cx: &mut Context<Editor>) {
     let Some(addon) = editor.addon_mut::<WalkthroughAddon>() else {
         return;
     };
     let store = addon.store.clone();
-    let old_block_ids = std::mem::take(&mut addon.blocks)
+    let old_blocks = std::mem::take(&mut addon.blocks);
+    let collapsed_steps = old_blocks
+        .iter()
+        .filter(|block| keep_collapsed && block.renderer.collapsed)
+        .map(|block| block.renderer.step.id.clone())
+        .collect::<HashSet<_>>();
+    let old_block_ids = old_blocks
         .into_iter()
         .map(|block| block.block_id)
         .collect::<HashSet<_>>();
@@ -220,6 +229,7 @@ fn refresh_annotations(editor: &mut Editor, cx: &mut Context<Editor>) {
     for (range, step, index, step_count, previous_step, next_step) in renderers {
         let markdown =
             cx.new(|cx| Markdown::new(step.comment.clone(), language_registry.clone(), None, cx));
+        let collapsed = collapsed_steps.contains(&step.id);
         let renderer = StepBlockRenderer {
             store: store.downgrade(),
             editor: weak_editor.clone(),
@@ -229,7 +239,7 @@ fn refresh_annotations(editor: &mut Editor, cx: &mut Context<Editor>) {
             previous_step,
             next_step,
             markdown,
-            collapsed: false,
+            collapsed,
         };
         properties.push(BlockProperties {
             placement: BlockPlacement::Below(range.end),
@@ -626,9 +636,10 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use editor::display_map::{BlockId, ToDisplayPoint as _};
+    use gpui::Focusable as _;
     use gpui::{TestAppContext, VisualTestContext};
     use language::Point;
-    use walkthrough::{Dismiss, NextStep};
+    use walkthrough::{Dismiss, NextStep, WalkthroughEditJson};
     use workspace::Item as _;
 
     #[derive(Debug, PartialEq)]
@@ -974,5 +985,139 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(collapsed(cx), [false, true]);
         assert_eq!(annotations(&one, cx).blocks, 2);
+    }
+
+    fn edit_comment(
+        id: &str,
+        path: &str,
+        lines: std::ops::Range<u32>,
+        comment: &str,
+    ) -> WalkthroughEditJson {
+        let mut step = sample_walkthrough(false)
+            .steps
+            .into_iter()
+            .find(|step| step.id == id)
+            .expect("sample step");
+        step.path = path.to_string();
+        step.start_line = lines.start;
+        step.end_line = lines.end;
+        step.comment = comment.to_string();
+        WalkthroughEditJson {
+            steps: vec![walkthrough::WalkthroughStepEditJson { step, after: None }],
+            ..Default::default()
+        }
+    }
+
+    fn block_comments(
+        editor: &Entity<Editor>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<(String, String)> {
+        editor.read_with(cx, |editor, _| {
+            editor
+                .addon::<WalkthroughAddon>()
+                .expect("addon")
+                .blocks
+                .iter()
+                .map(|block| {
+                    (
+                        block.renderer.step.id.to_string(),
+                        block.renderer.step.comment.to_string(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn test_editing_another_step_keeps_the_user_in_place(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        let one = active_editor(&test, cx);
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        let two = active_editor(&test, cx);
+        assert_ne!(one, two);
+        let cursor_before = cursor(&two, cx);
+        let annotations_before = annotations(&two, cx);
+
+        one.update(cx, |editor, cx| {
+            toggle_collapsed(editor, &StepId::new("c"), cx)
+        });
+        let project = test.project.clone();
+        let message = cx
+            .update(|_, cx| {
+                walkthrough::edit_walkthrough(
+                    edit_comment("a", "root/src/one.rs", 2..4, "Rewritten comment."),
+                    &project,
+                    cx,
+                )
+            })
+            .await;
+        cx.run_until_parked();
+        assert_eq!(
+            message.as_deref(),
+            Ok("Walkthrough updated: 3 steps across 2 files. Step order: a, b, c")
+        );
+
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        assert_eq!(active_editor(&test, cx), two);
+        assert_eq!(cursor(&two, cx), cursor_before);
+        assert_eq!(annotations(&two, cx), annotations_before);
+        assert!(two.update_in(cx, |editor, window, cx| {
+            editor.focus_handle(cx).is_focused(window)
+        }));
+
+        assert_eq!(
+            block_comments(&one, cx),
+            [
+                ("a".to_string(), "Rewritten comment.".to_string()),
+                ("c".to_string(), "Comment for **c**.".to_string()),
+            ]
+        );
+        let collapsed = one.read_with(cx, |editor, _| {
+            editor
+                .addon::<WalkthroughAddon>()
+                .expect("addon")
+                .blocks
+                .iter()
+                .map(|block| block.renderer.collapsed)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(collapsed, [false, true]);
+    }
+
+    #[gpui::test]
+    async fn test_editing_away_the_current_step_moves_to_the_clamped_index(
+        cx: &mut TestAppContext,
+    ) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(sample_walkthrough(false), &test, cx).await;
+        let one = active_editor(&test, cx);
+        cx.dispatch_action(NextStep);
+        cx.dispatch_action(NextStep);
+        cx.run_until_parked();
+        assert_eq!(active_step(&test, cx).as_deref(), Some("c"));
+
+        let project = test.project.clone();
+        cx.update(|_, cx| {
+            walkthrough::edit_walkthrough(
+                WalkthroughEditJson {
+                    remove_steps: vec!["c".to_string()],
+                    ..Default::default()
+                },
+                &project,
+                cx,
+            )
+        })
+        .await
+        .expect("edit is valid");
+        cx.run_until_parked();
+
+        assert_eq!(active_step(&test, cx).as_deref(), Some("b"));
+        let two = active_editor(&test, cx);
+        assert_ne!(one, two);
+        assert_eq!(cursor(&two, cx), Point::new(4, 0));
+        assert_eq!(annotations(&one, cx).blocks, 1);
     }
 }

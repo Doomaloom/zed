@@ -1,6 +1,6 @@
 # Code walkthroughs: demo
 
-A code walkthrough is an ordered set of agent-written comments pinned to highlighted ranges in normal editor buffers, with a flowchart beside the code. The Zed Agent, and external agents through Zed's `zed` MCP server, create one with the `create_walkthrough` tool. Nothing is written to the files.
+A code walkthrough is an ordered set of agent-written comments pinned to highlighted ranges in normal editor buffers, with a flowchart beside the code. The Zed Agent, and external agents through Zed's `zed` MCP server, create one with the `create_walkthrough` tool. Two companion tools change it afterwards: `get_walkthrough` returns the walkthrough that is showing and the step you are on, and `edit_walkthrough` replaces, inserts or removes steps (and updates the title, summary, flowchart, example or legend) in place. Nothing is written to the files.
 
 This is a prototype. The automated tests cover state and structure; how it looks has not been checked by a person yet. The checklist below is for that.
 
@@ -43,7 +43,13 @@ What should happen:
 3. A flowchart tab opens in a split to the right, with the node for step 1 highlighted and a step list under the diagram.
 4. The agent replies in chat with a sentence or two and does not repeat the explanation.
 
-The same prompt works in an external agent thread. There the call shows up as the `create_walkthrough` tool of the `zed` server, and the agent may ask for permission to use it.
+The same prompt works in an external agent thread. There the call shows up as the `create_walkthrough` tool of the `zed` server, and the agent may ask for permission to use it. `get_walkthrough` and `edit_walkthrough` appear there too.
+
+To try editing, follow up with:
+
+> Explain the second step in more detail and add a step for the error path.
+
+The agent should call `get_walkthrough`, then `edit_walkthrough` once. The existing steps keep their order, new steps appear where the agent put them, and you stay on the step you were on.
 
 ## Actions
 
@@ -54,6 +60,7 @@ The same prompt works in an external agent thread. There the call shows up as th
 | `walkthrough: toggle flowchart` | | Opens or closes the flowchart tab |
 | `walkthrough: dismiss` | | Removes all highlights, comment blocks and the flowchart tab |
 | `walkthrough: load from json` | | Loads a walkthrough from a JSON file |
+| `walkthrough: reopen` | | Lists the last 10 walkthroughs shown in this project, newest first, and shows the one you pick again |
 
 All except the last are available only while a walkthrough is active. Each comment block also has previous, next and collapse buttons, and clicking a step title, a row in the step list or a flowchart node jumps to that step.
 
@@ -86,6 +93,8 @@ All except the last are available only while a walkthrough is active. Each comme
 - [ ] Scrolling a 5,000-line file with 12 steps stays smooth.
 - [ ] Dismiss removes everything, and the files show no modifications.
 - [ ] Creating a second walkthrough replaces the first cleanly.
+- [ ] Asking the agent for more detail on one step updates that step's comment in place. You stay on the same step, the editor does not jump to step 1 or take focus, and `walkthrough: reopen` lists the edited walkthrough once, not twice.
+- [ ] After dismissing a walkthrough, or restarting Zed, `walkthrough: reopen` lists the earlier walkthroughs newest first with a title, step count and age. Picking one shows it again, and with no history a short message appears instead of an empty list.
 - [ ] Light and dark themes are both readable, in the editor and in the flowchart, including all six highlight colours.
 - [ ] `ctrl-alt-]` and `ctrl-alt-[` do not get in the way of typing on your keyboard layout.
 
@@ -100,7 +109,7 @@ All except the last are available only while a walkthrough is active. Each comme
 - Not verified against each external agent by a person yet. The MCP server's tests pass, but the bridge (`zed --nc <socket>`) and the standalone server (`zed --mcp`) have not been exercised end to end with a real agent.
 - `zed --mcp` finds Zed through files in the `mcp_servers` folder of Zed's data directory. It does not know about a custom `--user-data-dir`, and it matches the client's working directory to project roots by plain path prefix.
 - Multibuffer editors (project search, diagnostics, diffs) are not annotated.
-- A walkthrough lives in memory: it is gone after a restart and is not shared with collaborators.
+- The active walkthrough lives in memory: it is not restored automatically after a restart and is not shared with collaborators. The last 10 walkthroughs shown per project are saved and can be shown again with `walkthrough: reopen`.
 - The flowchart has no pan or zoom.
 - If the same file is open in two panes, both are annotated but navigation uses the first pane it finds.
 

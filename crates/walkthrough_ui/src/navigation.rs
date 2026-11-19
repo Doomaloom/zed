@@ -7,12 +7,15 @@ use feature_flags::{FeatureFlagAppExt as _, WalkthroughFeatureFlag};
 use gpui::{App, AsyncApp, Context, Entity, PathPromptOptions, Window, prelude::*};
 use project::{Project, ProjectPath};
 use walkthrough::{
-    Dismiss, GlobalFlowchartCheck, GoToStep, LoadFromJson, NextStep, PreviousStep, StepId,
-    ToggleFlowchart, Walkthrough, WalkthroughEvent, WalkthroughJson, WalkthroughStore,
+    Dismiss, GoToStep, LoadFromJson, NextStep, PreviousStep, Reopen, StepId, ToggleFlowchart,
+    WalkthroughEvent, WalkthroughJson, WalkthroughStore, activate_walkthrough,
 };
-use workspace::{Pane, SplitDirection, Workspace, notifications::DetachAndPromptErr as _};
+use workspace::{
+    Pane, SplitDirection, Toast, Workspace,
+    notifications::{DetachAndPromptErr as _, NotificationId},
+};
 
-use crate::FlowchartView;
+use crate::{FlowchartView, reopen_picker::ReopenPicker};
 
 /// How many lines of context to keep above a step's range when scrolling to
 /// it, so the range comes first and its comment block below stays in view.
@@ -51,7 +54,7 @@ fn refresh_action_visibility(has_walkthrough: bool, cx: &mut App) {
         TypeId::of::<ToggleFlowchart>(),
         TypeId::of::<Dismiss>(),
     ];
-    let load_action = [TypeId::of::<LoadFromJson>()];
+    let load_actions = [TypeId::of::<LoadFromJson>(), TypeId::of::<Reopen>()];
     let enabled = cx.has_flag::<WalkthroughFeatureFlag>();
     CommandPaletteFilter::update_global(cx, |filter, _| {
         if has_walkthrough {
@@ -60,9 +63,9 @@ fn refresh_action_visibility(has_walkthrough: bool, cx: &mut App) {
             filter.hide_action_types(&walkthrough_actions);
         }
         if enabled {
-            filter.show_action_types(&load_action);
+            filter.show_action_types(&load_actions);
         } else {
-            filter.hide_action_types(&load_action);
+            filter.hide_action_types(&load_actions);
         }
     });
 }
@@ -89,7 +92,11 @@ fn register(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                 WalkthroughEvent::Created(_) | WalkthroughEvent::ActiveStepChanged { .. } => {
                     reveal_active_step(workspace, store, window, cx);
                 }
-                WalkthroughEvent::Dismissed => {}
+                WalkthroughEvent::Updated {
+                    active_step_moved: true,
+                    ..
+                } => reveal_active_step(workspace, store, window, cx),
+                WalkthroughEvent::Updated { .. } | WalkthroughEvent::Dismissed => {}
             }
         }
     })
@@ -101,6 +108,9 @@ fn register(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
             let div = if cx.has_flag::<WalkthroughFeatureFlag>() {
                 div.on_action(cx.listener(|workspace, _: &LoadFromJson, window, cx| {
                     load_from_json(workspace, window, cx);
+                }))
+                .on_action(cx.listener(|workspace, _: &Reopen, window, cx| {
+                    reopen(workspace, window, cx);
                 }))
             } else {
                 div
@@ -239,6 +249,46 @@ fn load_from_json(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
     .detach_and_prompt_err("Failed to load walkthrough", window, cx, |_, _, _| None);
 }
 
+fn reopen(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let store = WalkthroughStore::for_project(workspace.project(), cx);
+    let history_loaded = store.update(cx, |store, cx| store.load_history(cx));
+    cx.spawn_in(window, async move |workspace, cx| {
+        history_loaded.await;
+        workspace.update_in(cx, |workspace, window, cx| {
+            let entries = store.read(cx).history().to_vec();
+            if entries.is_empty() {
+                workspace.show_toast(
+                    Toast::new(
+                        NotificationId::unique::<Reopen>(),
+                        "No previous walkthroughs in this project",
+                    )
+                    .autohide(),
+                    cx,
+                );
+                return;
+            }
+            let weak_workspace = cx.weak_entity();
+            workspace.toggle_modal(window, cx, |window, cx| {
+                ReopenPicker::new(entries, weak_workspace, window, cx)
+            });
+        })
+    })
+    .detach_and_log_err(cx);
+}
+
+pub(crate) fn show_from_history(
+    workspace: &mut Workspace,
+    json: WalkthroughJson,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let project = workspace.project().clone();
+    cx.spawn_in(window, async move |_, cx| {
+        load_walkthrough_json(json, &project, cx).await
+    })
+    .detach_and_prompt_err("Failed to reopen walkthrough", window, cx, |_, _, _| None);
+}
+
 async fn load_walkthrough_file(
     path: &Path,
     project: &Entity<Project>,
@@ -261,21 +311,8 @@ pub(crate) async fn load_walkthrough_json(
     project: &Entity<Project>,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    let load = cx.update(|cx| {
-        let flowchart_check = cx
-            .try_global::<GlobalFlowchartCheck>()
-            .map(|check| check.0.clone());
-        Walkthrough::from_json(
-            json,
-            project,
-            move |source| match flowchart_check {
-                Some(check) => check(source),
-                None => Ok(()),
-            },
-            cx,
-        )
-    });
-    let walkthrough = load.await.map_err(|errors| {
+    let load = cx.update(|cx| activate_walkthrough(json, project, cx));
+    load.await.map_err(|errors| {
         anyhow!(
             "{}",
             errors
@@ -285,10 +322,6 @@ pub(crate) async fn load_walkthrough_json(
                 .join("\n")
         )
     })?;
-    cx.update(|cx| {
-        WalkthroughStore::for_project(project, cx)
-            .update(cx, |store, cx| store.set_walkthrough(walkthrough, cx));
-    });
     Ok(())
 }
 
@@ -471,5 +504,88 @@ mod tests {
         );
         assert!(walkthrough_actions_hidden(cx));
         assert!(!cx.update(|window, cx| window.is_action_available(&NextStep, cx)));
+    }
+
+    fn titled_walkthrough(title: &str) -> WalkthroughJson {
+        let mut json = sample_walkthrough(false);
+        json.title = title.to_string();
+        json
+    }
+
+    fn reopen_titles(test: &TestWorkspace, cx: &mut VisualTestContext) -> Option<Vec<String>> {
+        let picker = test.workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<ReopenPicker>(cx)
+                .map(|modal| modal.read(cx).picker().clone())
+        })?;
+        Some(picker.read_with(cx, |picker, _| {
+            picker
+                .delegate
+                .titles()
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        }))
+    }
+
+    #[gpui::test]
+    async fn test_reopen_picker_shows_history_and_confirming_reshows_it(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        load_walkthrough(titled_walkthrough("Older"), &test, cx).await;
+        load_walkthrough(titled_walkthrough("Newer"), &test, cx).await;
+
+        cx.dispatch_action(Dismiss);
+        cx.run_until_parked();
+        assert!(
+            test.store
+                .read_with(cx, |store, _| store.active().is_none())
+        );
+
+        cx.dispatch_action(Reopen);
+        cx.run_until_parked();
+        assert_eq!(
+            reopen_titles(&test, cx),
+            Some(vec!["Newer".to_string(), "Older".to_string()])
+        );
+
+        let picker = test.workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_modal::<ReopenPicker>(cx)
+                .map(|modal| modal.read(cx).picker().clone())
+                .expect("the picker should be open")
+        });
+        picker.update_in(cx, |picker, window, cx| {
+            picker.set_selected_index(1, None, true, window, cx);
+        });
+        cx.dispatch_action(menu::Confirm);
+        cx.run_until_parked();
+
+        assert!(reopen_titles(&test, cx).is_none());
+        let title = test.store.read_with(cx, |store, _| {
+            store
+                .active()
+                .map(|walkthrough| walkthrough.title.to_string())
+        });
+        assert_eq!(title.as_deref(), Some("Older"));
+        let history = test.store.read_with(cx, |store, _| {
+            store
+                .history()
+                .iter()
+                .map(|entry| entry.walkthrough.title.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(history, ["Older", "Newer"]);
+    }
+
+    #[gpui::test]
+    async fn test_reopen_without_history_opens_no_picker(cx: &mut TestAppContext) {
+        let (test, cx) = init_test(cx).await;
+        cx.dispatch_action(Reopen);
+        cx.run_until_parked();
+        assert!(reopen_titles(&test, cx).is_none());
+        assert!(
+            test.store
+                .read_with(cx, |store, _| store.active().is_none())
+        );
     }
 }
